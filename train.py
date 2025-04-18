@@ -3,6 +3,8 @@ from tensorflow.keras.callbacks import ModelCheckpoint, LearningRateScheduler
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from sklearn.model_selection import train_test_split
 import os
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
+
 
 if not os.path.exists('brain_segmentation1'):
     os.makedirs('brain_segmentation1')
@@ -72,6 +74,32 @@ class Training(object):
         
         lr_scheduler = LearningRateScheduler(self.lr_schedule)
         
+        # Add these new callbacks for more efficient training
+        from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
+        
+        early_stopping = EarlyStopping(
+            monitor='val_loss',
+            patience=10,
+            restore_best_weights=True,
+            verbose=1
+        )
+        
+        reduce_lr = ReduceLROnPlateau(
+            monitor='val_loss',
+            factor=0.5,
+            patience=5,
+            min_lr=1e-5,
+            verbose=1
+        )
+        
+        # Combine all callbacks
+        callbacks = [
+            checkpointer,
+            early_stopping,
+            reduce_lr,
+            lr_scheduler
+        ]
+        
         print("Starting model training with TwoPathwayCNN...")
         history = self.model.fit(
             train_generator,
@@ -79,7 +107,7 @@ class Training(object):
             epochs=self.nb_epoch,
             validation_data=(X_valid, Y_valid),
             verbose=1,
-            callbacks=[checkpointer, lr_scheduler]
+            callbacks=callbacks
         )
         print("Model training completed.")
         return history
@@ -202,12 +230,47 @@ if __name__ == "__main__":
         print("Training labels shape:", Y_train.shape)
         print("Validation data shape:", X_valid.shape)
         print("Validation labels shape:", Y_valid.shape)
+
+        # In train.py, before creating the Training instance
+
+        def prepare_multiscale_data(X_patches):
+            """Prepare multiscale features for the model"""
+            import cv2
+            
+            # Original scale features
+            original_features = X_patches
+            
+            # Downsampled features
+            downsampled_features = np.zeros_like(X_patches)
+            
+            for i in range(len(X_patches)):
+                for j in range(X_patches.shape[3]):  # For each modality channel
+                    # Downsample by factor of 2
+                    downsampled = cv2.resize(X_patches[i, :, :, j], 
+                                            (X_patches.shape[2]//2, X_patches.shape[1]//2), 
+                                            interpolation=cv2.INTER_AREA)
+                    # Upsample back to original size
+                    upsampled = cv2.resize(downsampled, 
+                                        (X_patches.shape[2], X_patches.shape[1]), 
+                                        interpolation=cv2.INTER_LINEAR)
+                    downsampled_features[i, :, :, j] = upsampled
+            
+            return np.concatenate([original_features, downsampled_features], axis=3)
+
+        # Apply multiscale processing to your data
+        X_train_multiscale = prepare_multiscale_data(X_train)
+        X_valid_multiscale = prepare_multiscale_data(X_valid)
+
+        # Update model input shape to accept 8 channels (4 original + 4 downsampled)
+        from model import TwoPathwayCNN
+        model_instance = TwoPathwayCNN(img_shape=(128, 128, 8))
         
         # Initialize training with TwoPathwayCNN model
-        brain_seg = Training(batch_size=8, nb_epoch=2, load_model_resume_training=None)
+        brain_seg = Training(batch_size=4, nb_epoch=50, load_model_resume_training=None)
+        brain_seg.model = model_instance.model
         
         # Train the model
-        history = brain_seg.fit_2pg(X_train, Y_train, X_valid, Y_valid)
+        history = brain_seg.fit_2pg(X_train_multiscale, Y_train, X_valid_multiscale, Y_valid)
         
         # Save the final model with validation loss in filename
         try:
