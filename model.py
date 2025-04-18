@@ -13,7 +13,7 @@ import numpy as np
 from losses import gen_dice_loss, dice_whole_metric, dice_core_metric, dice_en_metric
 
 class TwoPathwayCNN:
-    def __init__(self, img_shape=(128, 128, 4), load_model_weights=None):
+    def __init__(self, img_shape=(128, 128, 8), load_model_weights=None):
         self.img_shape = img_shape
         self.load_model_weights = load_model_weights
         self.model = self.build_model()
