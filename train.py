@@ -4,6 +4,9 @@ from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from sklearn.model_selection import train_test_split
 import os
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
+from tensorflow.keras.optimizers import SGD
+import tensorflow as tf
+import math
 
 
 if not os.path.exists('brain_segmentation1'):
@@ -51,7 +54,7 @@ class Training(object):
 
     def fit_2pg(self, X_train, Y_train, X_valid, Y_valid):
         """
-        Train the model
+        Train the model using the approach described in the paper
         
         Parameters:
         - X_train: Training input data
@@ -72,23 +75,21 @@ class Training(object):
             save_best_only=True
         )
         
-        lr_scheduler = LearningRateScheduler(self.lr_schedule)
-        
-        # Add these new callbacks for more efficient training
-        from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
-        
-        early_stopping = EarlyStopping(
-            monitor='val_loss',
-            patience=10,
-            restore_best_weights=True,
-            verbose=1
+        # Momentum scheduler to gradually increase momentum from 0.5 to 0.9
+        momentum_scheduler = MomentumScheduler(
+            initial_momentum=0.5,
+            final_momentum=0.9,
+            epochs=self.nb_epoch
         )
         
-        reduce_lr = ReduceLROnPlateau(
+        # Learning rate scheduler using the specified approach
+        lr_scheduler = LearningRateScheduler(self.lr_schedule)
+        
+        # Early stopping if no improvement
+        early_stopping = EarlyStopping(
             monitor='val_loss',
-            factor=0.5,
-            patience=5,
-            min_lr=1e-5,
+            patience=15,
+            restore_best_weights=True,
             verbose=1
         )
         
@@ -96,11 +97,35 @@ class Training(object):
         callbacks = [
             checkpointer,
             early_stopping,
-            reduce_lr,
-            lr_scheduler
+            lr_scheduler,
+            momentum_scheduler
         ]
         
-        print("Starting model training with TwoPathwayCNN...")
+        # Configure the model with SGD optimizer as described
+        initial_learning_rate = 0.005
+        initial_momentum = 0.5
+        optimizer = SGD(
+            learning_rate=initial_learning_rate,
+            momentum=initial_momentum,
+            decay=0.1
+        )
+        
+        # Recompile model with the new optimizer configuration
+        from losses import gen_dice_loss, dice_whole_metric, dice_core_metric, dice_en_metric
+        
+        self.model.compile(
+            optimizer=optimizer,
+            loss=gen_dice_loss,
+            metrics=[
+                dice_whole_metric,
+                dice_core_metric,
+                dice_en_metric
+            ]
+        )
+        
+        print("Starting model training with TwoPathwayCNN using paper's approach...")
+        start_time = time.time()
+        
         history = self.model.fit(
             train_generator,
             steps_per_epoch=max(1, len(X_train) // self.batch_size),
@@ -109,7 +134,13 @@ class Training(object):
             verbose=1,
             callbacks=callbacks
         )
-        print("Model training completed.")
+        
+        end_time = time.time()
+        training_time = end_time - start_time
+        minutes = int(training_time // 60)
+        seconds = int(training_time % 60)
+        print(f"Model training completed in {minutes} minutes and {seconds} seconds.")
+        
         return history
 
     def img_msk_gen(self, X_train, Y_train, seed):
@@ -151,41 +182,29 @@ class Training(object):
             Y_batch = next(mask_generator)
             yield (X_batch, Y_batch)
 
-    # def lr_schedule(self, epoch):
-    #     """
-    #     Learning rate scheduler
-        
-    #     Parameters:
-    #     - epoch: Current epoch number
-        
-    #     Returns:
-    #     - learning rate for the current epoch
-    #     """
-    #     lr = 1e-3
-    #     if epoch > 180:
-    #         lr *= 0.5e-3
-    #     elif epoch > 150:
-    #         lr *= 1e-3
-    #     elif epoch > 120:
-    #         lr *= 1e-2
-    #     elif epoch > 80:
-    #         lr *= 1e-1
-    #     print('Learning rate:', lr)
-    #     return lr
-
-    # Update lr_schedule method in Training class
     def lr_schedule(self, epoch):
         """
-        Learning rate scheduler based on the paper's recommendations
+        Learning rate scheduler based on the paper's description
+        
+        Initial rate: 0.005
+        Decay: 0.1 at each epoch
+        
+        Parameters:
+        - epoch: Current epoch number
+        
+        Returns:
+        - learning rate for the current epoch
         """
-        initial_lr = 1e-3
-        if epoch > 150:
-            lr = initial_lr * 0.01
-        elif epoch > 100:
-            lr = initial_lr * 0.1
-        else:
-            lr = initial_lr
-        print('Learning rate:', lr)
+        initial_lr = 0.005
+        decay = 0.1
+        
+        # Calculate learning rate with decay factor for each epoch
+        lr = initial_lr * (decay ** epoch)
+        
+        # Add a minimum threshold to prevent learning rate becoming too small
+        lr = max(lr, 1e-6)
+        
+        print(f'Learning rate for epoch {epoch}: {lr}')
         return lr
     
     def save_model(self, model_name, val_loss=None):
@@ -205,16 +224,36 @@ class Training(object):
             self.model.save(save_path)
             print(f'Model saved to {save_path}')
 
+
+# Custom callback to gradually increase momentum during training
+class MomentumScheduler(tf.keras.callbacks.Callback):
+    def __init__(self, initial_momentum=0.5, final_momentum=0.9, epochs=50):
+        super(MomentumScheduler, self).__init__()
+        self.initial_momentum = initial_momentum
+        self.final_momentum = final_momentum
+        self.epochs = epochs
+    
+    def on_epoch_begin(self, epoch, logs=None):
+        # Calculate momentum value based on current epoch
+        # Gradually increase from initial to final value
+        progress = epoch / float(self.epochs)
+        momentum = self.initial_momentum + progress * (self.final_momentum - self.initial_momentum)
+        
+        # Ensure momentum is within bounds
+        momentum = min(max(momentum, self.initial_momentum), self.final_momentum)
+        
+        # Update optimizer momentum
+        self.model.optimizer.momentum = momentum
+        print(f'Momentum for epoch {epoch}: {momentum}')
+
+
 if __name__ == "__main__":
+    import time
+    
     print("Loading training data...")
     try:
         X_patches = np.load("x_training.npy").astype(np.float32)
         Y_labels = np.load("y_training.npy").astype(np.float32)
-        
-        # If you want to use a subset for testing
-        # N = 16
-        # X_patches = X_patches[:N]
-        # Y_labels = Y_labels[:N]
         
         print("Data loaded successfully")
         print("X_patches shape:", X_patches.shape)
@@ -231,31 +270,56 @@ if __name__ == "__main__":
         print("Validation data shape:", X_valid.shape)
         print("Validation labels shape:", Y_valid.shape)
 
-        # In train.py, before creating the Training instance
-
+        # Prepare multiscale data
+        # def prepare_multiscale_data(X_patches):
+        #     """Prepare multiscale features for the model"""
+        #     import cv2
+            
+        #     # Original scale features
+        #     original_features = X_patches
+            
+        #     # Downsampled features
+        #     downsampled_features = np.zeros_like(X_patches)
+            
+        #     for i in range(len(X_patches)):
+        #         for j in range(X_patches.shape[3]):  # For each modality channel
+        #             # Downsample by factor of 2
+        #             downsampled = cv2.resize(X_patches[i, :, :, j], 
+        #                                     (X_patches.shape[2]//2, X_patches.shape[1]//2), 
+        #                                     interpolation=cv2.INTER_AREA)
+        #             # Upsample back to original size
+        #             upsampled = cv2.resize(downsampled, 
+        #                                 (X_patches.shape[2], X_patches.shape[1]), 
+        #                                 interpolation=cv2.INTER_LINEAR)
+        #             downsampled_features[i, :, :, j] = upsampled
+            
+        #     return np.concatenate([original_features, downsampled_features], axis=3)
         def prepare_multiscale_data(X_patches):
-            """Prepare multiscale features for the model"""
+            """Create proper multiscale input according to the paper"""
             import cv2
             
-            # Original scale features
-            original_features = X_patches
+            # Create a new array with double the channels
+            multiscale = np.zeros((X_patches.shape[0], X_patches.shape[1], X_patches.shape[2], X_patches.shape[3]*2), 
+                                dtype=X_patches.dtype)
             
-            # Downsampled features
-            downsampled_features = np.zeros_like(X_patches)
+            # Copy original channels to first 4 channels
+            multiscale[:,:,:,:4] = X_patches
             
+            # Generate downsampled features for each channel
             for i in range(len(X_patches)):
-                for j in range(X_patches.shape[3]):  # For each modality channel
+                for j in range(X_patches.shape[3]):
                     # Downsample by factor of 2
                     downsampled = cv2.resize(X_patches[i, :, :, j], 
-                                            (X_patches.shape[2]//2, X_patches.shape[1]//2), 
-                                            interpolation=cv2.INTER_AREA)
+                                        (X_patches.shape[2]//2, X_patches.shape[1]//2), 
+                                        interpolation=cv2.INTER_AREA)
                     # Upsample back to original size
                     upsampled = cv2.resize(downsampled, 
                                         (X_patches.shape[2], X_patches.shape[1]), 
                                         interpolation=cv2.INTER_LINEAR)
-                    downsampled_features[i, :, :, j] = upsampled
+                    # Store in second set of channels
+                    multiscale[i, :, :, j+4] = upsampled
             
-            return np.concatenate([original_features, downsampled_features], axis=3)
+            return multiscale
 
         # Apply multiscale processing to your data
         X_train_multiscale = prepare_multiscale_data(X_train)
@@ -263,10 +327,13 @@ if __name__ == "__main__":
 
         # Update model input shape to accept 8 channels (4 original + 4 downsampled)
         from model import TwoPathwayCNN
+        
+        # Ensure the TwoPathwayCNN model includes dropout layers as mentioned in the paper
+        # You may need to modify the model.py file to include dropout with probability mentioned in the paper
         model_instance = TwoPathwayCNN(img_shape=(128, 128, 8))
         
         # Initialize training with TwoPathwayCNN model
-        brain_seg = Training(batch_size=4, nb_epoch=50, load_model_resume_training=None)
+        brain_seg = Training(batch_size=32, nb_epoch=50, load_model_resume_training=None)
         brain_seg.model = model_instance.model
         
         # Train the model
