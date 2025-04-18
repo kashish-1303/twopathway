@@ -1,15 +1,11 @@
-
-
-
 import numpy as np
 from tensorflow.keras.callbacks import ModelCheckpoint, LearningRateScheduler
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from sklearn.model_selection import train_test_split
 import os
 
-# Create directory for saving models if it doesn't exist
-if not os.path.exists('brain_segmentation'):
-    os.makedirs('brain_segmentation')
+if not os.path.exists('brain_segmentation1'):
+    os.makedirs('brain_segmentation1')
 
 class Training(object):
     def __init__(self, batch_size, nb_epoch, load_model_resume_training=None):
@@ -26,7 +22,7 @@ class Training(object):
         self.load_model_resume_training = load_model_resume_training
         
         # Import the model here to avoid circular imports
-        from model import TwoPathwayGroupCNN
+        from model import TwoPathwayCNN
         
         if load_model_resume_training is not None:
             # Load pre-trained model with custom objects if needed
@@ -44,14 +40,14 @@ class Training(object):
             )
             print("Pre-trained model loaded from:", load_model_resume_training)
         else:
-            # Create a new TwoPathwayGroupCNN model
-            model_instance = TwoPathwayGroupCNN(img_shape=(128, 128, 4))
+            # Create a new TwoPathwayCNN model
+            model_instance = TwoPathwayCNN(img_shape=(128, 128, 4))
             self.model = model_instance.model
-            print("TwoPathwayGroupCNN model initialized")
+            print("TwoPathwayCNN model initialized")
             
         print("Number of trainable parameters:", self.model.count_params())
 
-    def fit_unet(self, X_train, Y_train, X_valid, Y_valid):
+    def fit_2pg(self, X_train, Y_train, X_valid, Y_valid):
         """
         Train the model
         
@@ -60,20 +56,23 @@ class Training(object):
         - Y_train: Training target data
         - X_valid: Validation input data
         - Y_valid: Validation target data
+        
+        Returns:
+        - history: Training history object
         """
         print("Preparing data generator...")
         train_generator = self.img_msk_gen(X_train, Y_train, seed=42)
         
         print("Setting up callbacks...")
         checkpointer = ModelCheckpoint(
-            filepath='brain_segmentation/TwoPathwayGroupCNN.{epoch:02d}_{val_loss:.3f}.keras', 
+            filepath='brain_segmentation1/TwoPathwayCNN.{epoch:02d}_{val_loss:.3f}.keras', 
             verbose=1,
             save_best_only=True
         )
         
         lr_scheduler = LearningRateScheduler(self.lr_schedule)
         
-        print("Starting model training with TwoPathwayGroupCNN...")
+        print("Starting model training with TwoPathwayCNN...")
         history = self.model.fit(
             train_generator,
             steps_per_epoch=max(1, len(X_train) // self.batch_size),
@@ -124,38 +123,59 @@ class Training(object):
             Y_batch = next(mask_generator)
             yield (X_batch, Y_batch)
 
+    # def lr_schedule(self, epoch):
+    #     """
+    #     Learning rate scheduler
+        
+    #     Parameters:
+    #     - epoch: Current epoch number
+        
+    #     Returns:
+    #     - learning rate for the current epoch
+    #     """
+    #     lr = 1e-3
+    #     if epoch > 180:
+    #         lr *= 0.5e-3
+    #     elif epoch > 150:
+    #         lr *= 1e-3
+    #     elif epoch > 120:
+    #         lr *= 1e-2
+    #     elif epoch > 80:
+    #         lr *= 1e-1
+    #     print('Learning rate:', lr)
+    #     return lr
+
+    # Update lr_schedule method in Training class
     def lr_schedule(self, epoch):
         """
-        Learning rate scheduler
-        
-        Parameters:
-        - epoch: Current epoch number
-        
-        Returns:
-        - learning rate for the current epoch
+        Learning rate scheduler based on the paper's recommendations
         """
-        lr = 1e-3
-        if epoch > 180:
-            lr *= 0.5e-3
-        elif epoch > 150:
-            lr *= 1e-3
-        elif epoch > 120:
-            lr *= 1e-2
-        elif epoch > 80:
-            lr *= 1e-1
+        initial_lr = 1e-3
+        if epoch > 150:
+            lr = initial_lr * 0.01
+        elif epoch > 100:
+            lr = initial_lr * 0.1
+        else:
+            lr = initial_lr
         print('Learning rate:', lr)
         return lr
     
-    def save_model(self, model_name):
+    def save_model(self, model_name, val_loss=None):
         """
         Save the model to disk
         
         Parameters:
         - model_name: Path where to save the model, without extension
+        - val_loss: Optional validation loss to include in filename
         """
-        self.model.save(f'{model_name}.keras')
-        print(f'Model saved to {model_name}.keras')
-
+        if val_loss is not None:
+            save_path = f'{model_name}_{val_loss:.3f}.keras'
+            self.model.save(save_path)
+            print(f'Model saved to {save_path}')
+        else:
+            save_path = f'{model_name}.keras'
+            self.model.save(save_path)
+            print(f'Model saved to {save_path}')
 
 if __name__ == "__main__":
     print("Loading training data...")
@@ -183,14 +203,19 @@ if __name__ == "__main__":
         print("Validation data shape:", X_valid.shape)
         print("Validation labels shape:", Y_valid.shape)
         
-        # Initialize training with TwoPathwayGroupCNN model
-        brain_seg = Training(batch_size=8, nb_epoch=50, load_model_resume_training=None)
+        # Initialize training with TwoPathwayCNN model
+        brain_seg = Training(batch_size=8, nb_epoch=2, load_model_resume_training=None)
         
         # Train the model
-        brain_seg.fit_unet(X_train, Y_train, X_valid, Y_valid)
+        history = brain_seg.fit_2pg(X_train, Y_train, X_valid, Y_valid)
         
-        # Save the final model
-        brain_seg.save_model('brain_segmentation/TwoPathwayGroupCNN_final')
+        # Save the final model with validation loss in filename
+        try:
+            final_val_loss = history.history['val_loss'][-1]
+            brain_seg.save_model('brain_segmentation1/TwoPathwayCNN_final', val_loss=final_val_loss)
+        except Exception as e:
+            print(f"Warning: Couldn't save model with validation loss: {e}")
+            brain_seg.save_model('brain_segmentation1/TwoPathwayCNN_final')
         
     except FileNotFoundError as e:
         print(f"Error: {e}")
