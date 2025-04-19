@@ -7,6 +7,7 @@ from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
 from tensorflow.keras.optimizers import SGD
 import tensorflow as tf
 import math
+import cv2
 
 
 if not os.path.exists('brain_segmentation1'):
@@ -66,7 +67,7 @@ class Training(object):
         - history: Training history object
         """
         print("Preparing data generator...")
-        train_generator = self.img_msk_gen(X_train, Y_train, seed=42)
+        train_generator = self.custom_img_msk_gen(X_train, Y_train, 4,seed=42)
         
         print("Setting up callbacks...")
         checkpointer = ModelCheckpoint(
@@ -107,7 +108,7 @@ class Training(object):
         optimizer = SGD(
             learning_rate=initial_learning_rate,
             momentum=initial_momentum,
-            decay=0.1
+            
         )
         
         # Recompile model with the new optimizer configuration
@@ -142,45 +143,118 @@ class Training(object):
         print(f"Model training completed in {minutes} minutes and {seconds} seconds.")
         
         return history
-
-    def img_msk_gen(self, X_train, Y_train, seed):
+    def custom_img_msk_gen(self, X_train, Y_train, batch_size, seed):
         """
-        Create a generator for data augmentation
-        
-        Parameters:
-        - X_train: Training input data
-        - Y_train: Training target data
-        - seed: Random seed for reproducibility
-        
-        Returns:
-        - Generator yielding batches of augmented data
+        Custom generator that correctly handles 8-channel inputs
         """
-        # Data augmentation for both images and masks
-        datagen = ImageDataGenerator(
-            horizontal_flip=True,
-            vertical_flip=True,
-            rotation_range=20,
-            zoom_range=0.1,
-            width_shift_range=0.1,
-            height_shift_range=0.1
-        )
+        # Set random seed for reproducibility
+        np.random.seed(seed)
         
-        datagen_msk = ImageDataGenerator(
-            horizontal_flip=True,
-            vertical_flip=True,
-            rotation_range=20,
-            zoom_range=0.1,
-            width_shift_range=0.1,
-            height_shift_range=0.1
-        )
+        # Augmentation parameters
+        aug_params = {
+            'rotation_range': 20,
+            'zoom_range': 0.1,
+            'width_shift_range': 0.1,
+            'height_shift_range': 0.1,
+            'horizontal_flip': True,
+            'vertical_flip': True
+        }
         
-        image_generator = datagen.flow(X_train, batch_size=self.batch_size, seed=seed)
-        mask_generator = datagen_msk.flow(Y_train, batch_size=self.batch_size, seed=seed)
+        n_samples = X_train.shape[0]
+        indices = np.arange(n_samples)
         
         while True:
-            X_batch = next(image_generator)
-            Y_batch = next(mask_generator)
-            yield (X_batch, Y_batch)
+            # Shuffle indices each epoch
+            np.random.shuffle(indices)
+            
+            for start_idx in range(0, n_samples, batch_size):
+                # Get batch indices
+                batch_indices = indices[start_idx:start_idx + batch_size]
+                
+                # Extract batch data
+                X_batch = X_train[batch_indices].copy()
+                Y_batch = Y_train[batch_indices].copy()
+                
+                # Apply consistent augmentations to both X and Y
+                for i in range(len(X_batch)):
+                    # Determine random augmentation parameters for this sample
+                    angle = np.random.uniform(-aug_params['rotation_range'], aug_params['rotation_range'])
+                    zoom = np.random.uniform(1-aug_params['zoom_range'], 1+aug_params['zoom_range'])
+                    tx = np.random.uniform(-aug_params['width_shift_range'], aug_params['width_shift_range']) * X_batch.shape[2]
+                    ty = np.random.uniform(-aug_params['height_shift_range'], aug_params['height_shift_range']) * X_batch.shape[1]
+                    do_flip_h = np.random.random() < 0.5 and aug_params['horizontal_flip']
+                    do_flip_v = np.random.random() < 0.5 and aug_params['vertical_flip']
+                    
+                    # Apply transformations to each channel of X
+                    for j in range(X_batch.shape[3]):
+                        img = X_batch[i, :, :, j]
+                        # Apply rotation, zoom, shifts
+                        M = cv2.getRotationMatrix2D((img.shape[1]//2, img.shape[0]//2), angle, zoom)
+                        M[0, 2] += tx
+                        M[1, 2] += ty
+                        img = cv2.warpAffine(img, M, (img.shape[1], img.shape[0]))
+                        # Apply flips
+                        if do_flip_h:
+                            img = cv2.flip(img, 1)
+                        if do_flip_v:
+                            img = cv2.flip(img, 0)
+                        X_batch[i, :, :, j] = img
+                    
+                    # Apply same transformations to Y (segmentation mask)
+                    for j in range(Y_batch.shape[3]):
+                        msk = Y_batch[i, :, :, j]
+                        # For masks, use nearest neighbor interpolation to preserve labels
+                        M = cv2.getRotationMatrix2D((msk.shape[1]//2, msk.shape[0]//2), angle, zoom)
+                        M[0, 2] += tx
+                        M[1, 2] += ty
+                        msk = cv2.warpAffine(msk, M, (msk.shape[1], msk.shape[0]), flags=cv2.INTER_NEAREST)
+                        if do_flip_h:
+                            msk = cv2.flip(msk, 1)
+                        if do_flip_v:
+                            msk = cv2.flip(msk, 0)
+                        Y_batch[i, :, :, j] = msk
+                
+                yield X_batch, Y_batch
+
+    # def img_msk_gen(self, X_train, Y_train, seed):
+        # """
+        # Create a generator for data augmentation
+        
+        # Parameters:
+        # - X_train: Training input data
+        # - Y_train: Training target data
+        # - seed: Random seed for reproducibility
+        
+        # Returns:
+        # - Generator yielding batches of augmented data
+        # """
+        # # Data augmentation for both images and masks
+        # datagen = ImageDataGenerator(
+        #     horizontal_flip=True,
+        #     vertical_flip=True,
+        #     rotation_range=20,
+        #     zoom_range=0.1,
+        #     width_shift_range=0.1,
+        #     height_shift_range=0.1
+        # )
+        
+        # datagen_msk = ImageDataGenerator(
+        #     horizontal_flip=True,
+        #     vertical_flip=True,
+        #     rotation_range=20,
+        #     zoom_range=0.1,
+        #     width_shift_range=0.1,
+        #     height_shift_range=0.1
+        # )
+        
+        # image_generator = datagen.flow(X_train, batch_size=self.batch_size, seed=seed)
+        # mask_generator = datagen_msk.flow(Y_train, batch_size=self.batch_size, seed=seed)
+        
+        # while True:
+        #     X_batch = next(image_generator)
+        #     Y_batch = next(mask_generator)
+        #     yield (X_batch, Y_batch)
+
 
     def lr_schedule(self, epoch):
         """
