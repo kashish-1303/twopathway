@@ -1,428 +1,226 @@
 import numpy as np
-from tensorflow.keras.callbacks import ModelCheckpoint, LearningRateScheduler
-from tensorflow.keras.preprocessing.image import ImageDataGenerator
-from sklearn.model_selection import train_test_split
 import os
-from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
-from tensorflow.keras.optimizers import SGD
 import tensorflow as tf
-import math
-import cv2
+from tensorflow.keras.callbacks import ModelCheckpoint, ReduceLROnPlateau, EarlyStopping, LearningRateScheduler
+import matplotlib.pyplot as plt
+from model import TwoPathwayCNN
+import time
 
+# Set memory growth for GPU
+physical_devices = tf.config.list_physical_devices('GPU')
+if len(physical_devices) > 0:
+    try:
+        for device in physical_devices:
+            tf.config.experimental.set_memory_growth(device, True)
+    except:
+        print("Memory growth setting failed. Continuing with default settings.")
 
-if not os.path.exists('brain_segmentation1'):
-    os.makedirs('brain_segmentation1')
-
-class Training(object):
-    def __init__(self, batch_size, nb_epoch, load_model_resume_training=None):
-        """
-        Initialize the Training class
-        
-        Parameters:
-        - batch_size: Size of batches for training
-        - nb_epoch: Number of epochs to train
-        - load_model_resume_training: Path to pre-trained model to resume training
-        """
-        self.batch_size = batch_size
-        self.nb_epoch = nb_epoch
-        self.load_model_resume_training = load_model_resume_training
-        
-        # Import the model here to avoid circular imports
-        from model import TwoPathwayCNN
-        
-        if load_model_resume_training is not None:
-            # Load pre-trained model with custom objects if needed
-            from tensorflow.keras.models import load_model
-            from losses import gen_dice_loss, dice_whole_metric, dice_core_metric, dice_en_metric
-            
-            self.model = load_model(
-                load_model_resume_training,
-                custom_objects={
-                    'gen_dice_loss': gen_dice_loss,
-                    'dice_whole_metric': dice_whole_metric,
-                    'dice_core_metric': dice_core_metric,
-                    'dice_en_metric': dice_en_metric
-                }
-            )
-            print("Pre-trained model loaded from:", load_model_resume_training)
-        else:
-            # Create a new TwoPathwayCNN model
-            model_instance = TwoPathwayCNN(img_shape=(128, 128, 4))
-            self.model = model_instance.model
-            print("TwoPathwayCNN model initialized")
-            
-        print("Number of trainable parameters:", self.model.count_params())
-
-    def fit_2pg(self, X_train, Y_train, X_valid, Y_valid):
-        """
-        Train the model using the approach described in the paper
-        
-        Parameters:
-        - X_train: Training input data
-        - Y_train: Training target data
-        - X_valid: Validation input data
-        - Y_valid: Validation target data
-        
-        Returns:
-        - history: Training history object
-        """
-        print("Preparing data generator...")
-        train_generator = self.custom_img_msk_gen(X_train, Y_train, 4,seed=42)
-        
-        print("Setting up callbacks...")
-        checkpointer = ModelCheckpoint(
-            filepath='brain_segmentation1/TwoPathwayCNN.{epoch:02d}_{val_loss:.3f}.keras', 
-            verbose=1,
-            save_best_only=True
-        )
-        
-        # Momentum scheduler to gradually increase momentum from 0.5 to 0.9
-        momentum_scheduler = MomentumScheduler(
-            initial_momentum=0.5,
-            final_momentum=0.9,
-            epochs=self.nb_epoch
-        )
-        
-        # Learning rate scheduler using the specified approach
-        lr_scheduler = LearningRateScheduler(self.lr_schedule)
-        
-        # Early stopping if no improvement
-        early_stopping = EarlyStopping(
-            monitor='val_loss',
-            patience=15,
-            restore_best_weights=True,
-            verbose=1
-        )
-        
-        # Combine all callbacks
-        callbacks = [
-            checkpointer,
-            early_stopping,
-            lr_scheduler,
-            momentum_scheduler
-        ]
-        
-        # Configure the model with SGD optimizer as described
-        initial_learning_rate = 0.005
-        initial_momentum = 0.5
-        optimizer = SGD(
-            learning_rate=initial_learning_rate,
-            momentum=initial_momentum,
-            
-        )
-        
-        # Recompile model with the new optimizer configuration
-        from losses import gen_dice_loss, dice_whole_metric, dice_core_metric, dice_en_metric
-        
-        self.model.compile(
-            optimizer=optimizer,
-            loss=gen_dice_loss,
-            metrics=[
-                dice_whole_metric,
-                dice_core_metric,
-                dice_en_metric
-            ]
-        )
-        
-        print("Starting model training with TwoPathwayCNN using paper's approach...")
-        start_time = time.time()
-        
-        history = self.model.fit(
-            train_generator,
-            steps_per_epoch=max(1, len(X_train) // self.batch_size),
-            epochs=self.nb_epoch,
-            validation_data=(X_valid, Y_valid),
-            verbose=1,
-            callbacks=callbacks
-        )
-        
-        end_time = time.time()
-        training_time = end_time - start_time
-        minutes = int(training_time // 60)
-        seconds = int(training_time % 60)
-        print(f"Model training completed in {minutes} minutes and {seconds} seconds.")
-        
-        return history
-    def custom_img_msk_gen(self, X_train, Y_train, batch_size, seed):
-        """
-        Custom generator that correctly handles 8-channel inputs
-        """
-        # Set random seed for reproducibility
-        np.random.seed(seed)
-        
-        # Augmentation parameters
-        aug_params = {
-            'rotation_range': 20,
-            'zoom_range': 0.1,
-            'width_shift_range': 0.1,
-            'height_shift_range': 0.1,
-            'horizontal_flip': True,
-            'vertical_flip': True
-        }
-        
-        n_samples = X_train.shape[0]
-        indices = np.arange(n_samples)
-        
-        while True:
-            # Shuffle indices each epoch
-            np.random.shuffle(indices)
-            
-            for start_idx in range(0, n_samples, batch_size):
-                # Get batch indices
-                batch_indices = indices[start_idx:start_idx + batch_size]
-                
-                # Extract batch data
-                X_batch = X_train[batch_indices].copy()
-                Y_batch = Y_train[batch_indices].copy()
-                
-                # Apply consistent augmentations to both X and Y
-                for i in range(len(X_batch)):
-                    # Determine random augmentation parameters for this sample
-                    angle = np.random.uniform(-aug_params['rotation_range'], aug_params['rotation_range'])
-                    zoom = np.random.uniform(1-aug_params['zoom_range'], 1+aug_params['zoom_range'])
-                    tx = np.random.uniform(-aug_params['width_shift_range'], aug_params['width_shift_range']) * X_batch.shape[2]
-                    ty = np.random.uniform(-aug_params['height_shift_range'], aug_params['height_shift_range']) * X_batch.shape[1]
-                    do_flip_h = np.random.random() < 0.5 and aug_params['horizontal_flip']
-                    do_flip_v = np.random.random() < 0.5 and aug_params['vertical_flip']
-                    
-                    # Apply transformations to each channel of X
-                    for j in range(X_batch.shape[3]):
-                        img = X_batch[i, :, :, j]
-                        # Apply rotation, zoom, shifts
-                        M = cv2.getRotationMatrix2D((img.shape[1]//2, img.shape[0]//2), angle, zoom)
-                        M[0, 2] += tx
-                        M[1, 2] += ty
-                        img = cv2.warpAffine(img, M, (img.shape[1], img.shape[0]))
-                        # Apply flips
-                        if do_flip_h:
-                            img = cv2.flip(img, 1)
-                        if do_flip_v:
-                            img = cv2.flip(img, 0)
-                        X_batch[i, :, :, j] = img
-                    
-                    # Apply same transformations to Y (segmentation mask)
-                    for j in range(Y_batch.shape[3]):
-                        msk = Y_batch[i, :, :, j]
-                        # For masks, use nearest neighbor interpolation to preserve labels
-                        M = cv2.getRotationMatrix2D((msk.shape[1]//2, msk.shape[0]//2), angle, zoom)
-                        M[0, 2] += tx
-                        M[1, 2] += ty
-                        msk = cv2.warpAffine(msk, M, (msk.shape[1], msk.shape[0]), flags=cv2.INTER_NEAREST)
-                        if do_flip_h:
-                            msk = cv2.flip(msk, 1)
-                        if do_flip_v:
-                            msk = cv2.flip(msk, 0)
-                        Y_batch[i, :, :, j] = msk
-                
-                yield X_batch, Y_batch
-
-    # def img_msk_gen(self, X_train, Y_train, seed):
-        # """
-        # Create a generator for data augmentation
-        
-        # Parameters:
-        # - X_train: Training input data
-        # - Y_train: Training target data
-        # - seed: Random seed for reproducibility
-        
-        # Returns:
-        # - Generator yielding batches of augmented data
-        # """
-        # # Data augmentation for both images and masks
-        # datagen = ImageDataGenerator(
-        #     horizontal_flip=True,
-        #     vertical_flip=True,
-        #     rotation_range=20,
-        #     zoom_range=0.1,
-        #     width_shift_range=0.1,
-        #     height_shift_range=0.1
-        # )
-        
-        # datagen_msk = ImageDataGenerator(
-        #     horizontal_flip=True,
-        #     vertical_flip=True,
-        #     rotation_range=20,
-        #     zoom_range=0.1,
-        #     width_shift_range=0.1,
-        #     height_shift_range=0.1
-        # )
-        
-        # image_generator = datagen.flow(X_train, batch_size=self.batch_size, seed=seed)
-        # mask_generator = datagen_msk.flow(Y_train, batch_size=self.batch_size, seed=seed)
-        
-        # while True:
-        #     X_batch = next(image_generator)
-        #     Y_batch = next(mask_generator)
-        #     yield (X_batch, Y_batch)
-
-
-    def lr_schedule(self, epoch):
-        """
-        Learning rate scheduler based on the paper's description
-        
-        Initial rate: 0.005
-        Decay: 0.1 at each epoch
-        
-        Parameters:
-        - epoch: Current epoch number
-        
-        Returns:
-        - learning rate for the current epoch
-        """
+def train_phase1(model, X_train, y_train, X_val, y_val, epochs=50, batch_size=32):
+    """
+    Phase 1: Train on balanced patches
+    """
+    print("Starting Phase 1: Training on balanced patches...")
+    
+    # Create model checkpoint callback
+    checkpoint = ModelCheckpoint(
+        'twopath_phase1.h5', 
+        monitor='val_dice_whole_metric', 
+        verbose=1, 
+        save_best_only=True, 
+        mode='max'
+    )
+    
+    # Learning rate schedule: Start with 0.005 and decay by 0.1
+    def lr_schedule(epoch):
         initial_lr = 0.005
-        decay = 0.1
-        
-        # Calculate learning rate with decay factor for each epoch
-        lr = initial_lr * (decay ** epoch)
-        
-        # Add a minimum threshold to prevent learning rate becoming too small
-        lr = max(lr, 1e-6)
-        
-        print(f'Learning rate for epoch {epoch}: {lr}')
-        return lr
-    
-    def save_model(self, model_name, val_loss=None):
-        """
-        Save the model to disk
-        
-        Parameters:
-        - model_name: Path where to save the model, without extension
-        - val_loss: Optional validation loss to include in filename
-        """
-        if val_loss is not None:
-            save_path = f'{model_name}_{val_loss:.3f}.keras'
-            self.model.save(save_path)
-            print(f'Model saved to {save_path}')
+        if epoch < 10:
+            return initial_lr
+        elif epoch < 20:
+            return initial_lr * 0.1
         else:
-            save_path = f'{model_name}.keras'
-            self.model.save(save_path)
-            print(f'Model saved to {save_path}')
-
-
-# Custom callback to gradually increase momentum during training
-class MomentumScheduler(tf.keras.callbacks.Callback):
-    def __init__(self, initial_momentum=0.5, final_momentum=0.9, epochs=50):
-        super(MomentumScheduler, self).__init__()
-        self.initial_momentum = initial_momentum
-        self.final_momentum = final_momentum
-        self.epochs = epochs
+            return initial_lr * 0.01
     
-    def on_epoch_begin(self, epoch, logs=None):
-        # Calculate momentum value based on current epoch
-        # Gradually increase from initial to final value
-        progress = epoch / float(self.epochs)
-        momentum = self.initial_momentum + progress * (self.final_momentum - self.initial_momentum)
-        
-        # Ensure momentum is within bounds
-        momentum = min(max(momentum, self.initial_momentum), self.final_momentum)
-        
-        # Update optimizer momentum
-        self.model.optimizer.momentum = momentum
-        print(f'Momentum for epoch {epoch}: {momentum}')
+    # Momentum schedule: Gradually increase from 0.5 to 0.9
+    def momentum_schedule(epoch):
+        return min(0.5 + epoch * 0.01, 0.9)
+    
+    lr_scheduler = LearningRateScheduler(lr_schedule)
+    
+    # Early stopping
+    early_stopping = EarlyStopping(
+        monitor='val_loss',
+        patience=10,
+        verbose=1,
+        restore_best_weights=True
+    )
+    
+    # Train the model - Phase 1
+    start_time = time.time()
+    history = model.model.fit(
+        X_train, y_train,
+        validation_data=(X_val, y_val),
+        epochs=epochs,
+        batch_size=batch_size,
+        callbacks=[checkpoint, lr_scheduler, early_stopping],
+        verbose=1
+    )
+    end_time = time.time()
+    
+    print(f"Phase 1 training completed in {end_time - start_time:.2f} seconds")
+    
+    # Save training history
+    np.save('training_history_phase1.npy', history.history)
+    
+    # Plot training history
+    plot_training_history(history, 'phase1')
+    
+    return history
 
+def train_phase2(model, X_train, y_train, X_val, y_val, epochs=20, batch_size=32):
+    """
+    Phase 2: Fine-tune only the output layer on unbalanced dataset
+    """
+    print("Starting Phase 2: Fine-tuning on unbalanced dataset...")
+    
+    # Load best weights from phase 1
+    model.model.load_weights('twopath_phase1.h5')
+    
+    # Freeze all layers except the output layer
+    for layer in model.model.layers[:-1]:
+        layer.trainable = False
+    
+    # Recompile model with lower learning rate
+    model.model.compile(
+        loss='categorical_crossentropy',  # Switch to standard cross-entropy
+        optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
+        metrics=[dice_whole_metric, dice_core_metric, dice_en_metric]
+    )
+    
+    # Create model checkpoint callback
+    checkpoint = ModelCheckpoint(
+        'twopath_final.h5', 
+        monitor='val_dice_whole_metric', 
+        verbose=1, 
+        save_best_only=True, 
+        mode='max'
+    )
+    
+    # Early stopping
+    early_stopping = EarlyStopping(
+        monitor='val_loss',
+        patience=10,
+        verbose=1,
+        restore_best_weights=True
+    )
+    
+    # Train the model - Phase 2
+    start_time = time.time()
+    history = model.model.fit(
+        X_train, y_train,
+        validation_data=(X_val, y_val),
+        epochs=epochs,
+        batch_size=batch_size,
+        callbacks=[checkpoint, early_stopping],
+        verbose=1
+    )
+    end_time = time.time()
+    
+    print(f"Phase 2 training completed in {end_time - start_time:.2f} seconds")
+    
+    # Save training history
+    np.save('training_history_phase2.npy', history.history)
+    
+    # Plot training history
+    plot_training_history(history, 'phase2')
+    
+    return history
+
+def plot_training_history(history, phase):
+    """
+    Plot training metrics
+    """
+    plt.figure(figsize=(12, 10))
+    
+    # Plot training & validation loss
+    plt.subplot(2, 2, 1)
+    plt.plot(history.history['loss'])
+    plt.plot(history.history['val_loss'])
+    plt.title(f'Model loss ({phase})')
+    plt.ylabel('Loss')
+    plt.xlabel('Epoch')
+    plt.legend(['Train', 'Validation'], loc='upper right')
+    
+    # Plot dice whole metric
+    plt.subplot(2, 2, 2)
+    plt.plot(history.history['dice_whole_metric'])
+    plt.plot(history.history['val_dice_whole_metric'])
+    plt.title(f'Dice Whole Tumor ({phase})')
+    plt.ylabel('Dice')
+    plt.xlabel('Epoch')
+    plt.legend(['Train', 'Validation'], loc='lower right')
+    
+    # Plot dice core metric
+    plt.subplot(2, 2, 3)
+    plt.plot(history.history['dice_core_metric'])
+    plt.plot(history.history['val_dice_core_metric'])
+    plt.title(f'Dice Tumor Core ({phase})')
+    plt.ylabel('Dice')
+    plt.xlabel('Epoch')
+    plt.legend(['Train', 'Validation'], loc='lower right')
+    
+    # Plot dice enhancing metric
+    plt.subplot(2, 2, 4)
+    plt.plot(history.history['dice_en_metric'])
+    plt.plot(history.history['val_dice_en_metric'])
+    plt.title(f'Dice Enhancing Tumor ({phase})')
+    plt.ylabel('Dice')
+    plt.xlabel('Epoch')
+    plt.legend(['Train', 'Validation'], loc='lower right')
+    
+    plt.tight_layout()
+    plt.savefig(f'training_history_{phase}.png')
+    plt.close()
 
 if __name__ == "__main__":
-    import time
+    # Load preprocessed data
+    X_train = np.load('x_training.npy')
+    y_train = np.load('y_training.npy')
     
-    print("Loading training data...")
-    try:
-        X_patches = np.load("x_training.npy").astype(np.float32)
-        Y_labels = np.load("y_training.npy").astype(np.float32)
-        
-        print("Data loaded successfully")
-        print("X_patches shape:", X_patches.shape)
-        print("Y_labels shape:", Y_labels.shape)
-        
-        # Split the data into training and validation sets
-        X_train, X_valid, Y_train, Y_valid = train_test_split(
-            X_patches, Y_labels, test_size=0.2, random_state=42
-        )
-        
-        print("After split:")
-        print("Training data shape:", X_train.shape)
-        print("Training labels shape:", Y_train.shape)
-        print("Validation data shape:", X_valid.shape)
-        print("Validation labels shape:", Y_valid.shape)
-
-        # Prepare multiscale data
-        # def prepare_multiscale_data(X_patches):
-        #     """Prepare multiscale features for the model"""
-        #     import cv2
-            
-        #     # Original scale features
-        #     original_features = X_patches
-            
-        #     # Downsampled features
-        #     downsampled_features = np.zeros_like(X_patches)
-            
-        #     for i in range(len(X_patches)):
-        #         for j in range(X_patches.shape[3]):  # For each modality channel
-        #             # Downsample by factor of 2
-        #             downsampled = cv2.resize(X_patches[i, :, :, j], 
-        #                                     (X_patches.shape[2]//2, X_patches.shape[1]//2), 
-        #                                     interpolation=cv2.INTER_AREA)
-        #             # Upsample back to original size
-        #             upsampled = cv2.resize(downsampled, 
-        #                                 (X_patches.shape[2], X_patches.shape[1]), 
-        #                                 interpolation=cv2.INTER_LINEAR)
-        #             downsampled_features[i, :, :, j] = upsampled
-            
-        #     return np.concatenate([original_features, downsampled_features], axis=3)
-        def prepare_multiscale_data(X_patches):
-            """Create proper multiscale input according to the paper"""
-            import cv2
-            
-            # Create a new array with double the channels
-            multiscale = np.zeros((X_patches.shape[0], X_patches.shape[1], X_patches.shape[2], X_patches.shape[3]*2), 
-                                dtype=X_patches.dtype)
-            
-            # Copy original channels to first 4 channels
-            multiscale[:,:,:,:4] = X_patches
-            
-            # Generate downsampled features for each channel
-            for i in range(len(X_patches)):
-                for j in range(X_patches.shape[3]):
-                    # Downsample by factor of 2
-                    downsampled = cv2.resize(X_patches[i, :, :, j], 
-                                        (X_patches.shape[2]//2, X_patches.shape[1]//2), 
-                                        interpolation=cv2.INTER_AREA)
-                    # Upsample back to original size
-                    upsampled = cv2.resize(downsampled, 
-                                        (X_patches.shape[2], X_patches.shape[1]), 
-                                        interpolation=cv2.INTER_LINEAR)
-                    # Store in second set of channels
-                    multiscale[i, :, :, j+4] = upsampled
-            
-            return multiscale
-
-        # Apply multiscale processing to your data
-        X_train_multiscale = prepare_multiscale_data(X_train)
-        X_valid_multiscale = prepare_multiscale_data(X_valid)
-
-        # Update model input shape to accept 8 channels (4 original + 4 downsampled)
-        from model import TwoPathwayCNN
-        
-        # Ensure the TwoPathwayCNN model includes dropout layers as mentioned in the paper
-        # You may need to modify the model.py file to include dropout with probability mentioned in the paper
-        model_instance = TwoPathwayCNN(img_shape=(128, 128, 8))
-        
-        # Initialize training with TwoPathwayCNN model
-        brain_seg = Training(batch_size=32, nb_epoch=50, load_model_resume_training=None)
-        brain_seg.model = model_instance.model
-        
-        # Train the model
-        history = brain_seg.fit_2pg(X_train_multiscale, Y_train, X_valid_multiscale, Y_valid)
-        
-        # Save the final model with validation loss in filename
-        try:
-            final_val_loss = history.history['val_loss'][-1]
-            brain_seg.save_model('brain_segmentation1/TwoPathwayCNN_final', val_loss=final_val_loss)
-        except Exception as e:
-            print(f"Warning: Couldn't save model with validation loss: {e}")
-            brain_seg.save_model('brain_segmentation1/TwoPathwayCNN_final')
-        
-    except FileNotFoundError as e:
-        print(f"Error: {e}")
-        print("Please make sure the training data files exist in the current directory.")
-    except Exception as e:
-        print(f"An error occurred: {e}")
+    print(f"Loaded training data: {X_train.shape}, {y_train.shape}")
+    
+    # Split into training and validation sets
+    from sklearn.model_selection import train_test_split
+    X_train, X_val, y_train, y_val = train_test_split(
+        X_train, y_train, test_size=0.2, random_state=42
+    )
+    
+    print(f"Training set: {X_train.shape}, {y_train.shape}")
+    print(f"Validation set: {X_val.shape}, {y_val.shape}")
+    
+    # Define input shape based on loaded data
+    img_shape = X_train.shape[1:]
+    print(f"Input shape: {img_shape}")
+    
+    # Create model
+    model = TwoPathwayCNN(img_shape=img_shape)
+    model.summary()
+    
+    # First phase of training with balanced data
+    history_phase1 = train_phase1(
+        model, 
+        X_train, y_train, 
+        X_val, y_val, 
+        epochs=30, 
+        batch_size=8  # Smaller batch size for CPU
+    )
+    
+    # Second phase of training to fine-tune output layer
+    history_phase2 = train_phase2(
+        model, 
+        X_train, y_train, 
+        X_val, y_val, 
+        epochs=10, 
+        batch_size=8  # Smaller batch size for CPU
+    )
+    
+    print("Training completed successfully!")
