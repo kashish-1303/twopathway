@@ -4,130 +4,142 @@ from tensorflow.keras.models import Model
 from tensorflow.keras.layers import (
     Input, Conv2D, MaxPooling2D, BatchNormalization, 
     Activation, concatenate, UpSampling2D, Dropout,
-    AveragePooling2D, Lambda
+    AveragePooling2D, Lambda, Reshape, Add
 )
 from tensorflow.keras.optimizers import Adam
 import numpy as np
 
-# Assume these are defined elsewhere in your code
+# Import losses
 from losses import gen_dice_loss, dice_whole_metric, dice_core_metric, dice_en_metric
 
 class TwoPathwayCNN:
-    def __init__(self, img_shape=(128, 128, 8), load_model_weights=None):
+    def __init__(self, img_shape=(128, 128, 4), load_model_weights=None):
         self.img_shape = img_shape
         self.load_model_weights = load_model_weights
         self.model = self.build_model()
         
-
-    def group_conv(self, x, filters, kernel_size, groups=32, padding='same'):
+    def p4m_group_conv(self, x, filters, kernel_size, padding='same'):
         """
-        More efficient implementation of group convolution
+        Implementation of p4m group convolution (translations, rotations, and reflections)
         """
-        # Check if groups parameter makes sense for the input
-        input_channels = K.int_shape(x)[-1]
-        if input_channels < groups:
-            groups = max(1, input_channels)
-        
-        if groups == 1:
-            return Conv2D(filters, kernel_size, padding=padding)(x)
-        
-        # Ensure filters is divisible by groups
-        filters_per_group = filters // groups
-        
-        # Process each group
-        group_outputs = []
-        for i in range(groups):
-            # Extract the group's channels using slice
-            start_channel = i * (input_channels // groups)
-            end_channel = (i + 1) * (input_channels // groups) if i < groups - 1 else input_channels
+        # Define all transformations in the p4m group
+        transformations = [
+            # (m=0, r=0): Identity
+            lambda x: x,
             
-            # Extract input slice
-            group_input = Lambda(lambda x: x[:, :, :, start_channel:end_channel])(x)
+            # (m=0, r=1,2,3): Rotations by 90°, 180°, 270°
+            lambda x: tf.image.rot90(x, k=1),
+            lambda x: tf.image.rot90(x, k=2),
+            lambda x: tf.image.rot90(x, k=3),
             
-            # Apply convolution to this group
-            group_output = Conv2D(filters_per_group, kernel_size, padding=padding)(group_input)
-            group_outputs.append(group_output)
+            # (m=1, r=0): Reflection (horizontal flip)
+            lambda x: tf.image.flip_left_right(x),
+            
+            # (m=1, r=1): Reflection + 90° rotation
+            lambda x: tf.image.flip_left_right(tf.image.rot90(x, k=1)),
+            
+            # (m=1, r=2): Reflection + 180° rotation (vertical flip)
+            lambda x: tf.image.flip_up_down(x),
+            
+            # (m=1, r=3): Reflection + 270° rotation
+            lambda x: tf.image.flip_left_right(tf.image.rot90(x, k=3))
+        ]
         
-        # Concatenate all group outputs
-        return concatenate(group_outputs) if len(group_outputs) > 1 else group_outputs[0]
-    
-    def maxout(self, inputs, num_units=2):
+        # Define inverse transformations
+        inverse_transformations = [
+            # Identity inverse
+            lambda x: x,
+            
+            # Rotation inverses
+            lambda x: tf.image.rot90(x, k=3),
+            lambda x: tf.image.rot90(x, k=2),
+            lambda x: tf.image.rot90(x, k=1),
+            
+            # Reflection inverse
+            lambda x: tf.image.flip_left_right(x),
+            
+            # Reflection + rotation inverses
+            lambda x: tf.image.rot90(tf.image.flip_left_right(x), k=3),
+            lambda x: tf.image.flip_up_down(x),
+            lambda x: tf.image.rot90(tf.image.flip_left_right(x), k=1)
+        ]
+        
+        # Apply each transformation, convolve, and apply inverse
+        outputs = []
+        
+        # Process each transformation
+        for i, (transform, inv_transform) in enumerate(zip(transformations, inverse_transformations)):
+            # Apply transformation
+            transformed = Lambda(
+                lambda x, transform=transform: transform(x),
+                output_shape=K.int_shape(x)[1:]
+            )(x)
+            
+            # Apply convolution
+            conv = Conv2D(
+                filters, 
+                kernel_size, 
+                padding=padding,
+                name=f'group_conv_{i}'
+            )(transformed)
+            
+            # Apply inverse transformation
+            inv_transformed = Lambda(
+                lambda x, inv_transform=inv_transform: inv_transform(x),
+                output_shape=(K.int_shape(x)[1], K.int_shape(x)[2], filters)
+            )(conv)
+            
+            outputs.append(inv_transformed)
+        
+        # Combine all outputs
+        return Add()(outputs)
+        
+    def group_pooling(self, x):
         """
-        Implementation of maxout activation as described in the paper.
+        Group pooling: takes max across orientations
         """
-        shape = inputs.get_shape().as_list()
-        # Reshape for maxout: (batch_size, h, w, num_features // num_units, num_units)
-        out_shape = (-1, shape[1], shape[2], shape[3] // num_units, num_units)
-        reshaped = tf.reshape(inputs, out_shape)
-        # Perform maxout operation
-        outputs = tf.reduce_max(reshaped, axis=4)
-        return outputs
+        return Lambda(lambda x: K.max(x, axis=-1, keepdims=True))(x)
     
     def local_pathway(self, x):
         """
-        Local pathway implementation with decreasing kernel sizes
+        Local pathway with 7x7 receptive field
         """
-        # First local convolution block: 7x7 kernel, maxout, 4x4 pooling
-        x = self.group_conv(x, 64*2, 7)  # *2 for maxout
-        x = Lambda(lambda x: self.maxout(x))(x)
+        # Use p4m group convolution
+        x = self.p4m_group_conv(x, 64, 7)
         x = BatchNormalization()(x)
-        x = MaxPooling2D(pool_size=(4, 4))(x)
+        x = Activation('relu')(x)
+        x = MaxPooling2D(pool_size=(2, 2), strides=(1, 1), padding='same')(x)
         
-        # Second local convolution block: 5x5 kernel, maxout, 2x2 pooling
-        x = self.group_conv(x, 64*2, 5)
-        x = Lambda(lambda x: self.maxout(x))(x)
+        # Second convolution block
+        x = self.p4m_group_conv(x, 128, 5)
         x = BatchNormalization()(x)
-        x = MaxPooling2D(pool_size=(2, 2))(x)
+        x = Activation('relu')(x)
+        x = MaxPooling2D(pool_size=(2, 2), strides=(1, 1), padding='same')(x)
         
-        # Third local convolution block: 3x3 kernel, maxout, no pooling
-        x = self.group_conv(x, 64*2, 3)
-        x = Lambda(lambda x: self.maxout(x))(x)
+        # Third convolution block
+        x = self.p4m_group_conv(x, 256, 3)
         x = BatchNormalization()(x)
+        x = Activation('relu')(x)
+        x = Dropout(0.3)(x)
         
         return x
     
     def global_pathway(self, x):
         """
-        Global pathway implementation with consistent large kernel
+        Global pathway with 13x13 receptive field
         """
-        # Global convolution block: 13x13 kernel, maxout, no pooling
-        x = self.group_conv(x, 160*2, 13)
-        x = Lambda(lambda x: self.maxout(x))(x)
+        # Global pathway with larger receptive field
+        x = self.p4m_group_conv(x, 64, 13)
         x = BatchNormalization()(x)
+        x = Activation('relu')(x)
+        
+        # Second global convolution
+        x = self.p4m_group_conv(x, 128, 9)
+        x = BatchNormalization()(x)
+        x = Activation('relu')(x)
+        x = Dropout(0.3)(x)
         
         return x
-    
-    # Add to Pipeline class in paste-3.txt
-    def extract_multiscale_features(self, patches):
-        """
-        Extract features at multiple scales as described in the paper
-        """
-        # Original scale features
-        original_features = patches
-        
-        # Downsampled features (for capturing larger context)
-        downsampled_features = []
-        for patch in patches:
-            modalities = []
-            for i in range(patch.shape[0]):
-                # Downsample by factor of 2
-                downsampled = cv2.resize(patch[i], 
-                                        (patch.shape[2]//2, patch.shape[1]//2), 
-                                        interpolation=cv2.INTER_AREA)
-                # Upsample back to original size to maintain dimensions
-                upsampled = cv2.resize(downsampled, 
-                                    (patch.shape[2], patch.shape[1]), 
-                                    interpolation=cv2.INTER_LINEAR)
-                modalities.append(upsampled)
-            downsampled_features.append(np.stack(modalities))
-        
-        # Combine multi-scale features
-        combined_features = np.concatenate([
-            original_features, 
-            np.array(downsampled_features)
-        ], axis=1)  # Concatenate along modality dimension
-        
-        return combined_features
     
     def build_model(self):
         input_layer = Input(shape=self.img_shape)
@@ -138,41 +150,29 @@ class TwoPathwayCNN:
         # Build global pathway
         global_features = self.global_pathway(input_layer)
         
-        # Resize global features to match local features dimensions
-        local_shape = K.int_shape(local_features)
-        h, w = local_shape[1], local_shape[2]
-        
-        # Resize global_path to match local_path dimensions
-        global_features_resized = tf.keras.layers.Resizing(h, w)(global_features)
-        
         # Concatenate local and global pathways
-        merged = concatenate([local_features, global_features_resized])
+        merged = concatenate([local_features, global_features])
         
-        # Final processing with 21x21 convolutions
-        x = self.group_conv(merged, 160*2, 21)
-        x = Lambda(lambda x: self.maxout(x))(x)
+        # Final classification layers
+        x = self.p4m_group_conv(merged, 128, 5)
         x = BatchNormalization()(x)
+        x = Activation('relu')(x)
         
-        x = self.group_conv(x, 160*2, 21)
-        x = Lambda(lambda x: self.maxout(x))(x)
+        # Additional convolutional layer
+        x = self.p4m_group_conv(x, 64, 3)
         x = BatchNormalization()(x)
+        x = Activation('relu')(x)
+        x = Dropout(0.3)(x)
         
-        x = self.group_conv(x, 160*2, 21)
-        x = Lambda(lambda x: self.maxout(x))(x)
-        x = BatchNormalization()(x)
+        # Final 1x1 convolution for classification
+        x = Conv2D(4, 1, activation='softmax', padding='same')(x)
         
-        # Upsample back to original image dimensions
-        x = tf.keras.layers.Resizing(self.img_shape[0], self.img_shape[1])(x)
+        model = Model(inputs=input_layer, outputs=x)
         
-        # Final classification layer
-        output = Conv2D(4, 1, activation='softmax', padding='same')(x)
-        
-        model = Model(inputs=input_layer, outputs=output)
-        
-        # Use a lower learning rate to prevent NaN issues
+        # Use Adam optimizer with proper learning rate
         model.compile(
             loss=gen_dice_loss, 
-            optimizer=Adam(learning_rate=0.0001),  # Reduced learning rate
+            optimizer=Adam(learning_rate=0.005),  # As per paper
             metrics=[dice_whole_metric, dice_core_metric, dice_en_metric]
         )
         
