@@ -1,6 +1,3 @@
-
-
-
 # 27th april
 
 import tensorflow as tf
@@ -13,7 +10,7 @@ from tensorflow.keras.layers import (
 )
 from tensorflow.keras.optimizers import Adam
 import numpy as np
-
+from tensorflow.keras.layers import Multiply
 # Import losses
 from losses import gen_dice_loss, dice_whole_metric, dice_core_metric, dice_en_metric
 
@@ -154,6 +151,42 @@ class TwoPathwayCNN:
         
         return x
     
+    def attention_block(self, x, g, filters):
+        """
+        Attention gate to focus on relevant features
+        x: Input feature map
+        g: Gating signal from skip connection
+        """
+        theta_x = Conv2D(filters, 1, padding='same')(x)
+        phi_g = Conv2D(filters, 1, padding='same')(g)
+        
+        f = Activation('relu')(Add()([theta_x, phi_g]))
+        psi_f = Conv2D(1, 1, padding='same')(f)
+        
+        att_map = Activation('sigmoid')(psi_f)
+        return Multiply()([x, att_map])
+    
+    def residual_block(self, x, filters, kernel_size, prefix):
+        shortcut = x
+        
+        # Add Conv-BN-ReLU sequence
+        x = self.p4m_group_conv(x, filters, kernel_size, prefix=prefix+'_a_')
+        x = BatchNormalization()(x)
+        x = Activation('relu')(x)
+        
+        # Add Conv-BN sequence
+        x = self.p4m_group_conv(x, filters, kernel_size, prefix=prefix+'_b_')
+        x = BatchNormalization()(x)
+        
+        # If dimensions don't match, use 1x1 conv to match dimensions
+        if K.int_shape(shortcut)[-1] != filters:
+            shortcut = Conv2D(filters, 1, padding='same')(shortcut)
+        
+        # Add shortcut
+        x = Add()([x, shortcut])
+        x = Activation('relu')(x)
+    
+        return x
     def build_model(self):
         input_layer = Input(shape=self.img_shape)
         
