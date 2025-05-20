@@ -1,15 +1,7 @@
 
 
-#27th april
 import tensorflow as tf
 import tensorflow.keras.backend as K
-
-def weighted_log_loss(y_true, y_pred):
-    y_pred = K.clip(y_pred, K.epsilon(), 1 - K.epsilon())
-    # Weights for different classes [background, edema, non-enhancing, enhancing]
-    weights = tf.constant([1, 5, 2, 4], dtype=tf.float32)
-    loss = y_true * K.log(y_pred) * weights
-    return -K.mean(K.sum(loss, axis=-1))
 
 def dice(y_true, y_pred):
     # Cast inputs to float32 to ensure type consistency
@@ -18,6 +10,29 @@ def dice(y_true, y_pred):
     intersection = K.sum(y_true_f * y_pred_f)
     smooth = 1.0
     return (2. * intersection + smooth) / (K.sum(y_true_f) + K.sum(y_pred_f) + smooth)
+
+def weighted_log_loss(y_true, y_pred):
+    y_pred = K.clip(y_pred, K.epsilon(), 1 - K.epsilon())
+    # Weights for different classes [background, edema, non-enhancing, enhancing]
+    weights = tf.constant([1, 5, 2, 4], dtype=tf.float32)
+    loss = y_true * K.log(y_pred) * weights
+    return -K.mean(K.sum(loss, axis=-1))
+
+def focal_loss(y_true, y_pred, gamma=2.0):
+    """Focal loss for addressing class imbalance"""
+    y_pred = K.clip(y_pred, K.epsilon(), 1 - K.epsilon())
+    
+    # Calculate focal weight
+    pt = tf.where(tf.equal(y_true, 1), y_pred, 1-y_pred)
+    focal_weight = K.pow(1-pt, gamma)
+    
+    # Calculate cross entropy
+    ce = -y_true * K.log(y_pred)
+    
+    # Apply focal weight
+    loss = focal_weight * ce
+    
+    return K.mean(K.sum(loss, axis=-1))
 
 def gen_dice_loss(y_true, y_pred):
     y_true = K.cast(y_true, 'float32')
@@ -29,7 +44,13 @@ def gen_dice_loss(y_true, y_pred):
         dice_sum += dice(y_true[..., index], y_pred[..., index])
     
     dice_mean = dice_sum / num_classes
-    return 1 - dice_mean + weighted_log_loss(y_true, y_pred)
+    dice_loss = 1 - dice_mean
+    
+    # Combine with focal loss for better handling of class imbalance
+    focal = focal_loss(y_true, y_pred)
+    
+    # Return weighted combination of dice loss and other losses
+    return dice_loss + weighted_log_loss(y_true, y_pred) + 0.5 * focal
 
 def dice_whole_metric(y_true, y_pred):
     # Ensure consistent types
