@@ -1,3 +1,5 @@
+
+
 import random
 import numpy as np
 from glob import glob
@@ -141,7 +143,8 @@ class Pipeline(object):
         
         # Calculate how many patches to extract from each class
         # We'll oversample tumor regions to address class imbalance
-        num_tumor_patches = min(int(num_patches * 0.7), len(tumor_indices))
+        # num_tumor_patches = min(int(num_patches * 0.7), len(tumor_indices))
+        num_tumor_patches = min(int(num_patches * 0.25), len(tumor_indices))
         num_non_tumor_patches = num_patches - num_tumor_patches
         
         print(f"Sampling {num_tumor_patches} tumor patches and {num_non_tumor_patches} non-tumor patches")
@@ -226,6 +229,51 @@ class Pipeline(object):
         
         return np.array(patches), np.array(labels)
     
+    # def sample_multiscale_patches(self, num_patches, scales=[(4, 64, 64), (4, 128, 128)]):
+    #     """Extract patches at multiple scales with balanced class representation"""
+    #     all_patches = []
+    #     all_labels = []
+        
+    #     # Distribute patches across scales
+    #     patches_per_scale = num_patches // len(scales)
+        
+    #     for scale in scales:
+    #         d, h, w = scale
+    #         patches, labels = self.sample_patches_with_balanced_classes(patches_per_scale, d, h, w)
+            
+    #         if len(patches) == 0:
+    #             print(f"Warning: No patches extracted for scale {scale}")
+    #             continue
+                
+    #         # If the scales differ, resize patches to a standard size
+    #         if h != 128 or w != 128:
+    #             resized_patches = []
+    #             for patch in patches:
+    #                 # Resize each modality
+    #                 resized_patch = np.zeros((d, 128, 128))
+    #                 for i in range(d):
+    #                     resized_patch[i] = cv2.resize(patch[i], (128, 128))
+    #                 resized_patches.append(resized_patch)
+    #             patches = np.array(resized_patches)
+                
+    #             # Resize labels
+    #             resized_labels = []
+    #             for label in labels:
+    #                 resized_labels.append(cv2.resize(label, (128, 128), interpolation=cv2.INTER_NEAREST))
+    #             labels = np.array(resized_labels)
+            
+    #         all_patches.append(patches)
+    #         all_labels.append(labels)
+        
+    #     # Combine patches from different scales
+    #     if all_patches:
+    #         combined_patches = np.concatenate(all_patches)
+    #         combined_labels = np.concatenate(all_labels)
+    #         return combined_patches, combined_labels
+    #     else:
+    #         print("Error: No patches were extracted at any scale")
+    #         return np.array([]), np.array([])
+
     def sample_multiscale_patches(self, num_patches, scales=[(4, 64, 64), (4, 128, 128)]):
         """Extract patches at multiple scales with balanced class representation"""
         all_patches = []
@@ -236,14 +284,18 @@ class Pipeline(object):
         
         for scale in scales:
             d, h, w = scale
+            print(f"Extracting patches at scale {scale}")
             patches, labels = self.sample_patches_with_balanced_classes(patches_per_scale, d, h, w)
             
-            if len(patches) == 0:
+            if patches is None or len(patches) == 0:
                 print(f"Warning: No patches extracted for scale {scale}")
                 continue
                 
+            print(f"Extracted {len(patches)} patches at scale {scale}")
+                
             # If the scales differ, resize patches to a standard size
             if h != 128 or w != 128:
+                print(f"Resizing patches from {h}x{w} to 128x128")
                 resized_patches = []
                 for patch in patches:
                     # Resize each modality
@@ -262,15 +314,23 @@ class Pipeline(object):
             all_patches.append(patches)
             all_labels.append(labels)
         
-        # Combine patches from different scales
-        if all_patches:
+        # Check if we have any patches before concatenating
+        if not all_patches:
+            print("Error: No patches were extracted at any scale")
+            return None, None
+            
+        try:
+            # Combine patches from different scales
             combined_patches = np.concatenate(all_patches)
             combined_labels = np.concatenate(all_labels)
+            print(f"Combined {len(combined_patches)} patches from all scales")
             return combined_patches, combined_labels
-        else:
-            print("Error: No patches were extracted at any scale")
-            return np.array([]), np.array([])
-        
+        except Exception as e:
+            print(f"Error concatenating patches: {e}")
+            if len(all_patches) == 1:
+                return all_patches[0], all_labels[0]
+            return None, None
+            
     def norm_slices(self, slice_not):
         normed_slices = np.zeros((5, 146, 192, 152)).astype(np.float32)
         for slice_ix in range(4):
@@ -292,8 +352,68 @@ class Pipeline(object):
             tmp[tmp == tmp.min()] = -9
             return tmp
         
+    # def augment_patches(self, patches, labels):
+    #     """Apply data augmentation to patches as per paper"""
+    #     augmented_patches = []
+    #     augmented_labels = []
+        
+    #     for i in range(len(patches)):
+    #         patch = patches[i]
+    #         label = labels[i]
+            
+    #         # Original patch
+    #         augmented_patches.append(patch)
+    #         augmented_labels.append(label)
+            
+    #         # Flipped patch (horizontal)
+    #         flipped_patch = np.copy(patch)
+    #         flipped_label = np.copy(label)
+    #         for j in range(patch.shape[0]):
+    #             flipped_patch[j] = np.fliplr(patch[j])
+    #         flipped_label = np.fliplr(label)
+    #         augmented_patches.append(flipped_patch)
+    #         augmented_labels.append(flipped_label)
+            
+    #         # Rotated patches (90, 180, 270 degrees)
+    #         for k in range(1, 4):  # 90, 180, 270 degrees
+    #             rotated_patch = np.copy(patch)
+    #             rotated_label = np.copy(label)
+    #             for j in range(patch.shape[0]):
+    #                 rotated_patch[j] = np.rot90(patch[j], k=k)
+    #             rotated_label = np.rot90(label, k=k)
+    #             augmented_patches.append(rotated_patch)
+    #             augmented_labels.append(rotated_label)
+            
+    #         # Gaussian noise (for robustness)
+    #         noisy_patch = np.copy(patch)
+    #         for j in range(patch.shape[0]):
+    #             noise = np.random.normal(0, 0.1, patch[j].shape)
+    #             noisy_patch[j] = patch[j] + noise
+    #         augmented_patches.append(noisy_patch)
+    #         augmented_labels.append(label)  # Label remains the same
+            
+    #         # Small random intensity shifts
+    #         intensity_patch = np.copy(patch)
+    #         for j in range(patch.shape[0]):
+    #             shift = np.random.uniform(-0.1, 0.1)
+    #             intensity_patch[j] = np.clip(patch[j] + shift, -1, 1)
+    #         augmented_patches.append(intensity_patch)
+    #         augmented_labels.append(label)
+            
+    #         # Add elastic deformation
+    #         try:
+    #             elastic_patch = np.copy(patch)
+    #             for j in range(patch.shape[0]):
+    #                 elastic_patch[j] = self.elastic_transform(patch[j])
+    #             # Don't apply elastic transform to labels as it could change the segmentation boundaries
+    #             augmented_patches.append(elastic_patch)
+    #             augmented_labels.append(label)
+    #         except Exception as e:
+    #             print(f"Skipping elastic transform due to error: {e}")
+            
+    #     return np.array(augmented_patches), np.array(augmented_labels)
+
     def augment_patches(self, patches, labels):
-        """Apply data augmentation to patches as per paper"""
         augmented_patches = []
         augmented_labels = []
         
@@ -301,58 +421,53 @@ class Pipeline(object):
             patch = patches[i]
             label = labels[i]
             
+            # Check if this is a tumor patch
+            is_tumor_patch = np.any(label > 0)
+            
             # Original patch
             augmented_patches.append(patch)
             augmented_labels.append(label)
             
-            # Flipped patch (horizontal)
-            flipped_patch = np.copy(patch)
-            flipped_label = np.copy(label)
-            for j in range(patch.shape[0]):
-                flipped_patch[j] = np.fliplr(patch[j])
-            flipped_label = np.fliplr(label)
-            augmented_patches.append(flipped_patch)
-            augmented_labels.append(flipped_label)
-            
-            # Rotated patches (90, 180, 270 degrees)
-            for k in range(1, 4):  # 90, 180, 270 degrees
-                rotated_patch = np.copy(patch)
-                rotated_label = np.copy(label)
+            # Apply fewer augmentations to tumor patches
+            if is_tumor_patch:
+                # For tumor patches, only add horizontal flip
+                flipped_patch = np.copy(patch)
+                flipped_label = np.copy(label)
                 for j in range(patch.shape[0]):
-                    rotated_patch[j] = np.rot90(patch[j], k=k)
-                rotated_label = np.rot90(label, k=k)
-                augmented_patches.append(rotated_patch)
-                augmented_labels.append(rotated_label)
-            
-            # Gaussian noise (for robustness)
-            noisy_patch = np.copy(patch)
-            for j in range(patch.shape[0]):
-                noise = np.random.normal(0, 0.1, patch[j].shape)
-                noisy_patch[j] = patch[j] + noise
-            augmented_patches.append(noisy_patch)
-            augmented_labels.append(label)  # Label remains the same
-            
-            # Small random intensity shifts
-            intensity_patch = np.copy(patch)
-            for j in range(patch.shape[0]):
-                shift = np.random.uniform(-0.1, 0.1)
-                intensity_patch[j] = np.clip(patch[j] + shift, -1, 1)
-            augmented_patches.append(intensity_patch)
-            augmented_labels.append(label)
-            
-            # Add elastic deformation
-            try:
-                elastic_patch = np.copy(patch)
+                    flipped_patch[j] = np.fliplr(patch[j])
+                flipped_label = np.fliplr(label)
+                augmented_patches.append(flipped_patch)
+                augmented_labels.append(flipped_label)
+            else:
+                # For non-tumor patches, apply all augmentations as before
+                # Flipped patch (horizontal)
+                flipped_patch = np.copy(patch)
+                flipped_label = np.copy(label)
                 for j in range(patch.shape[0]):
-                    elastic_patch[j] = self.elastic_transform(patch[j])
-                # Don't apply elastic transform to labels as it could change the segmentation boundaries
-                augmented_patches.append(elastic_patch)
+                    flipped_patch[j] = np.fliplr(patch[j])
+                flipped_label = np.fliplr(label)
+                augmented_patches.append(flipped_patch)
+                augmented_labels.append(flipped_label)
+                
+                # Rotated patches (90, 180, 270 degrees)
+                for k in range(1, 4):
+                    rotated_patch = np.copy(patch)
+                    rotated_label = np.copy(label)
+                    for j in range(patch.shape[0]):
+                        rotated_patch[j] = np.rot90(patch[j], k=k)
+                    rotated_label = np.rot90(label, k=k)
+                    augmented_patches.append(rotated_patch)
+                    augmented_labels.append(rotated_label)
+                
+                # Gaussian noise (for robustness)
+                noisy_patch = np.copy(patch)
+                for j in range(patch.shape[0]):
+                    noise = np.random.normal(0, 0.1, patch[j].shape)
+                    noisy_patch[j] = patch[j] + noise
+                augmented_patches.append(noisy_patch)
                 augmented_labels.append(label)
-            except Exception as e:
-                print(f"Skipping elastic transform due to error: {e}")
-            
         return np.array(augmented_patches), np.array(augmented_labels)
-    
+        
     def elastic_transform(self, image, alpha=15, sigma=5):
         """Apply elastic deformation to image"""
         shape = image.shape
@@ -365,6 +480,68 @@ class Pipeline(object):
         distorted_image = map_coordinates(image, indices, order=1, mode='reflect')
         return distorted_image.reshape(shape)
 
+# if __name__ == '__main__':
+#     current_dir = os.path.dirname(os.path.abspath(__file__))
+
+#     path_HGG = glob(os.path.join(current_dir, 'BRATS2015', 'training', 'HGG', '*'))
+#     path_LGG = glob(os.path.join(current_dir, 'BRATS2015', 'training', 'LGG', '*'))
+#     path_all = path_HGG + path_LGG
+
+#     np.random.seed(2022)
+#     np.random.shuffle(path_all)
+
+#     np.random.seed(1555)
+#     start, end = 0, 10
+#     num_patches = 120 * (end - start) * 2
+#     h, w, d = 128, 128, 4 
+
+#     pipe = Pipeline(list_train=path_all[start:end], Normalize=True)
+    
+#     # Use the balanced sampling method instead of random sampling
+#     # Use multi-scale patch extraction with multiple scales
+#     try:
+#         Patches, Y_labels = pipe.sample_multiscale_patches(num_patches)
+
+#         # Apply data augmentation
+#         Patches, Y_labels = pipe.augment_patches(Patches, Y_labels)
+        
+#         # Check if patches were successfully extracted
+#         if len(Patches) == 0:
+#             print("Error: No patches were extracted. Falling back to random sampling.")
+#             Patches, Y_labels = pipe.sample_patches_randomly(num_patches, d, h, w)
+#             if len(Patches) > 0:
+#                 Patches, Y_labels = pipe.augment_patches(Patches, Y_labels)
+#             else:
+#                 print("Error: Random sampling also failed to extract patches.")
+#                 exit(1)
+
+#         # Process the patches for training
+#         Patches = np.transpose(Patches, (0, 2, 3, 1)).astype(np.float32)
+
+#         Y_labels[Y_labels == 4] = 3
+
+#         shp = Y_labels.shape[0]
+#         Y_labels = Y_labels.reshape(-1)
+#         Y_labels = to_categorical(Y_labels).astype(np.uint8)
+#         Y_labels = Y_labels.reshape(shp, h, w, 4)
+
+#         shuffle = list(zip(Patches, Y_labels))
+#         np.random.seed(180)
+#         np.random.shuffle(shuffle)
+#         Patches = np.array([shuffle[i][0] for i in range(len(shuffle))])
+#         Y_labels = np.array([shuffle[i][1] for i in range(len(shuffle))])
+#         del shuffle
+        
+#         print("Size of the patches : ", Patches.shape)
+#         print("Size of their corresponding targets : ", Y_labels.shape)
+
+#         np.save("x_training_test", Patches.astype(np.float32))
+#         np.save("y_training_test", Y_labels.astype(np.uint8))
+        
+#     except Exception as e:
+#         print(f"Error during patch extraction: {e}")
+#         import traceback
+#         traceback.print_exc()
 if __name__ == '__main__':
     current_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -382,34 +559,64 @@ if __name__ == '__main__':
 
     pipe = Pipeline(list_train=path_all[start:end], Normalize=True)
     
-    # Use the balanced sampling method instead of random sampling
-    # Use multi-scale patch extraction with multiple scales
     try:
-        Patches, Y_labels = pipe.sample_multiscale_patches(num_patches)
-
-        # Apply data augmentation
-        Patches, Y_labels = pipe.augment_patches(Patches, Y_labels)
+        # Use multi-scale patch extraction
+        print("Extracting patches using multi-scale approach...")
+        multi_scale_patches, multi_scale_labels = pipe.sample_multiscale_patches(num_patches)
         
-        # Check if patches were successfully extracted
-        if len(Patches) == 0:
-            print("Error: No patches were extracted. Falling back to random sampling.")
-            Patches, Y_labels = pipe.sample_patches_randomly(num_patches, d, h, w)
-            if len(Patches) > 0:
-                Patches, Y_labels = pipe.augment_patches(Patches, Y_labels)
+        # Check if multi-scale extraction was successful
+        if multi_scale_patches is None or len(multi_scale_patches) == 0:
+            print("Multi-scale patch extraction failed. Falling back to balanced sampling.")
+            balanced_patches, balanced_labels = pipe.sample_patches_with_balanced_classes(num_patches, d, h, w)
+            
+            if balanced_patches is None or len(balanced_patches) == 0:
+                print("Balanced sampling failed. Falling back to random sampling.")
+                random_patches, random_labels = pipe.sample_patches_randomly(num_patches, d, h, w)
+                
+                if random_patches is None or len(random_patches) == 0:
+                    print("All patch extraction methods failed. Exiting.")
+                    exit(1)
+                else:
+                    Patches, Y_labels = random_patches, random_labels
             else:
-                print("Error: Random sampling also failed to extract patches.")
-                exit(1)
+                Patches, Y_labels = balanced_patches, balanced_labels
+        else:
+            Patches, Y_labels = multi_scale_patches, multi_scale_labels
+        
+        print(f"Successfully extracted {len(Patches)} patches")
+        
+        # Apply data augmentation
+        print("Applying data augmentation...")
+        try:
+            Augmented_Patches, Augmented_Y_labels = pipe.augment_patches(Patches, Y_labels)
+            
+            # Check if augmentation was successful
+            if Augmented_Patches is None or len(Augmented_Patches) == 0:
+                print("Warning: Augmentation failed. Using original patches.")
+                Augmented_Patches, Augmented_Y_labels = Patches, Y_labels
+                
+            Patches, Y_labels = Augmented_Patches, Augmented_Y_labels
+            print(f"After augmentation: {len(Patches)} patches")
+            
+        except Exception as e:
+            print(f"Error during augmentation: {e}")
+            print("Continuing with original patches without augmentation.")
 
         # Process the patches for training
+        print("Processing patches for training...")
         Patches = np.transpose(Patches, (0, 2, 3, 1)).astype(np.float32)
 
+        # Convert label 4 to 3 (standard BRATS format)
         Y_labels[Y_labels == 4] = 3
 
+        # Convert to categorical
         shp = Y_labels.shape[0]
         Y_labels = Y_labels.reshape(-1)
         Y_labels = to_categorical(Y_labels).astype(np.uint8)
         Y_labels = Y_labels.reshape(shp, h, w, 4)
 
+        # Shuffle data
+        print("Shuffling data...")
         shuffle = list(zip(Patches, Y_labels))
         np.random.seed(180)
         np.random.shuffle(shuffle)
@@ -420,8 +627,21 @@ if __name__ == '__main__':
         print("Size of the patches : ", Patches.shape)
         print("Size of their corresponding targets : ", Y_labels.shape)
 
+        # Class balance check
+        total_pixels = Y_labels.size // 4  # Divide by 4 since we have 4 classes
+        class_counts = [np.sum(Y_labels[:,:,:,i]) for i in range(4)]
+        class_percentages = [count/total_pixels*100 for count in class_counts]
+        print("Class distribution (%):")
+        print(f"  Background: {class_percentages[0]:.2f}%")
+        print(f"  Non-enhancing tumor: {class_percentages[1]:.2f}%")
+        print(f"  Edema: {class_percentages[2]:.2f}%")
+        print(f"  Enhancing tumor: {class_percentages[3]:.2f}%")
+
+        # Save processed data
+        print("Saving processed data...")
         np.save("x_training_test", Patches.astype(np.float32))
         np.save("y_training_test", Y_labels.astype(np.uint8))
+        print("Data saved successfully")
         
     except Exception as e:
         print(f"Error during patch extraction: {e}")
