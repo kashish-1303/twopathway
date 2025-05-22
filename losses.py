@@ -1,5 +1,3 @@
-
-
 import tensorflow as tf
 import tensorflow.keras.backend as K
 
@@ -14,7 +12,7 @@ def dice(y_true, y_pred):
 def weighted_log_loss(y_true, y_pred):
     y_pred = K.clip(y_pred, K.epsilon(), 1 - K.epsilon())
     # Weights for different classes [background, edema, non-enhancing, enhancing]
-    weights = tf.constant([1, 5, 2, 4], dtype=tf.float32)
+    weights = tf.constant([1, 8, 3, 10], dtype=tf.float32)
     loss = y_true * K.log(y_pred) * weights
     return -K.mean(K.sum(loss, axis=-1))
 
