@@ -1,4 +1,5 @@
 
+
 import tensorflow as tf
 from tensorflow.keras import backend as K
 from tensorflow.keras.models import Model
@@ -150,19 +151,29 @@ class TwoPathwayCNN:
         
         return x
     
+        # Replace the attention_block method with:
     def attention_block(self, x, g, filters):
         """
-        Attention gate to focus on relevant features
-        x: Input feature map
-        g: Gating signal from skip connection
+        Enhanced attention gate to focus on relevant features
         """
         theta_x = Conv2D(filters, 1, padding='same')(x)
         phi_g = Conv2D(filters, 1, padding='same')(g)
         
-        f = Activation('relu')(Add()([theta_x, phi_g]))
+        # Use additive attention
+        f = Add()([theta_x, phi_g])
+        f = Activation('relu')(f)
+        
+        # Add a convolutional layer to learn better attention weights
+        f = Conv2D(filters//2, 3, padding='same')(f)
+        f = BatchNormalization()(f)
+        f = Activation('relu')(f)
+        
         psi_f = Conv2D(1, 1, padding='same')(f)
         
+        # Use sigmoid for attention map
         att_map = Activation('sigmoid')(psi_f)
+        
+        # Apply attention
         return Multiply()([x, att_map])
     
     def residual_block(self, x, filters, kernel_size, prefix):
@@ -218,7 +229,8 @@ class TwoPathwayCNN:
         model.compile(
             loss=gen_dice_loss, 
             optimizer=Adam(learning_rate=0.005),  # As per paper
-            metrics=[dice_whole_metric, dice_core_metric, dice_en_metric]
+            metrics=[dice_whole_metric, dice_core_metric, dice_en_metric],
+            weighted_metrics=["accuracy"]
         )
         
         if self.load_model_weights:
