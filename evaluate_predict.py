@@ -1,6 +1,3 @@
-
-
-
 import numpy as np
 import tensorflow as tf
 import matplotlib.pyplot as plt
@@ -9,6 +6,27 @@ from sklearn.metrics import confusion_matrix, accuracy_score
 import os
 from model import TwoPathwayCNN  # Import your model class
 
+
+def load_saved_model():
+    """
+    Load the saved model directly instead of recreating it
+    """
+    weights_path = 'twopath_phase1_test.keras'
+    
+    if os.path.exists(weights_path):
+        try:
+            print(f"Loading model from {weights_path}...")
+            # Load with safe_mode=False to handle lambda functions
+            model = tf.keras.models.load_model(weights_path, safe_mode=False)
+            print("Model loaded successfully!")
+            return model
+        except Exception as e:
+            print(f"Error loading model: {e}")
+            print("Falling back to recreating model...")
+            return recreate_model()
+    else:
+        print(f"Model file {weights_path} not found. Recreating model...")
+        return recreate_model()
 def recreate_model(img_shape=(128, 128, 4)):
     """
     Recreate the model instead of loading it from saved file
@@ -250,8 +268,8 @@ if __name__ == "__main__":
     except FileNotFoundError:
         # If not found, load the original data and split again
         # (should match the same splitting logic used in training)
-        X_data = np.load('x_training.npy')
-        y_data = np.load('y_training.npy')
+        X_data = np.load('x_training_test.npy')
+        y_data = np.load('y_training_test.npy')
         
         # Take only the subset used for testing (5% of data)
         test_size = int(X_data.shape[0] * 0.05)
@@ -268,7 +286,7 @@ if __name__ == "__main__":
     
     # Instead of loading the model from disk, recreate it and load just the weights
     # This avoids the Lambda layer serialization issues
-    model = recreate_model(img_shape=X_val.shape[1:])
+    model = load_saved_model()
     
     # Make predictions and evaluate
     results, pred_labels = predict_and_evaluate(model, X_val, y_val)
