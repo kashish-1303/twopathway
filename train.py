@@ -1,3 +1,4 @@
+
 import numpy as np
 import os
 import tensorflow as tf
@@ -6,14 +7,15 @@ import matplotlib.pyplot as plt
 from model import TwoPathwayCNN
 import time
 
-# Set memory growth for GPU
-physical_devices = tf.config.list_physical_devices('GPU')
-if len(physical_devices) > 0:
-    try:
-        for device in physical_devices:
-            tf.config.experimental.set_memory_growth(device, True)
-    except:
-        print("Memory growth setting failed. Continuing with default settings.")
+# class GradientAccumulationCallback(tf.keras.callbacks.Callback):
+#     def __init__(self, accumulation_steps=4):
+#         super().__init__()
+#         self.accumulation_steps = accumulation_steps
+#         self.gradients = None
+
+#     def on_batch_end(self, batch, logs=None):
+#         if batch % self.accumulation_steps == 0:
+#             self.model.optimizer.apply_gradients()
 
 def train_phase1(model, X_train, y_train, X_val, y_val, epochs=50, batch_size=32):
     """
@@ -31,14 +33,15 @@ def train_phase1(model, X_train, y_train, X_val, y_val, epochs=50, batch_size=32
     )
     
     # Learning rate schedule: Start with 0.005 and decay by 0.1
+    # Replace the lr_schedule function with:
     def lr_schedule(epoch):
-        initial_lr = 0.005
-        if epoch < 10:
+        initial_lr = 0.001
+        if epoch < 5:
             return initial_lr
-        elif epoch < 20:
-            return initial_lr * 0.1
+        elif epoch < 10:
+            return initial_lr * 0.5
         else:
-            return initial_lr * 0.01
+            return initial_lr * 0.1
     
     # Momentum schedule: Gradually increase from 0.5 to 0.9
     def momentum_schedule(epoch):
@@ -49,11 +52,11 @@ def train_phase1(model, X_train, y_train, X_val, y_val, epochs=50, batch_size=32
     # Early stopping
     early_stopping = EarlyStopping(
         monitor='val_loss',
-        patience=10,
+        patience=5,
         verbose=1,
         restore_best_weights=True
     )
-    
+    # grad_accum = GradientAccumulationCallback(accumulation_steps=4),
     # Train the model - Phase 1
     start_time = time.time()
     history = model.model.fit(
@@ -85,9 +88,9 @@ def train_phase2(model, X_train, y_train, X_val, y_val, epochs=20, batch_size=32
     # Load best weights from phase 1 - updated path
     model.model.load_weights('twopath_phase1.keras')
     
-    # Freeze all layers except the output layer
-    for layer in model.model.layers[:-1]:
-        layer.trainable = False
+    trainable_start = len(model.model.layers) // 2
+    for i, layer in enumerate(model.model.layers):
+        layer.trainable = i >= trainable_start
     
     # Recompile model with lower learning rate
     model.model.compile(
@@ -210,8 +213,8 @@ if __name__ == "__main__":
         model, 
         X_train, y_train, 
         X_val, y_val, 
-        epochs=30, 
-        batch_size=8  # Smaller batch size for CPU
+        epochs=8, 
+        batch_size=4  # Smaller batch size for CPU
     )
     
     # Second phase of training to fine-tune output layer
@@ -219,8 +222,8 @@ if __name__ == "__main__":
         model, 
         X_train, y_train, 
         X_val, y_val, 
-        epochs=10, 
-        batch_size=8  # Smaller batch size for CPU
+        epochs=4, 
+        batch_size=4  # Smaller batch size for CPU
     )
     
     print("Training completed successfully!")
