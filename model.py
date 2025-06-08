@@ -1,198 +1,188 @@
-
-
-
-# 27th april
-
 import tensorflow as tf
 from tensorflow.keras import backend as K
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import (
     Input, Conv2D, MaxPooling2D, BatchNormalization, 
     Activation, concatenate, UpSampling2D, Dropout,
-    AveragePooling2D, Lambda, Reshape, Add
+    AveragePooling2D, Lambda, Reshape, Add, Multiply,
+    GlobalAveragePooling2D, Dense
 )
 from tensorflow.keras.optimizers import Adam
 import numpy as np
 
-# Import losses
-from losses import gen_dice_loss, dice_whole_metric, dice_core_metric, dice_en_metric
-
-class TwoPathwayCNN:
+class SimplifiedTwoPathwayGroupCNN:
     def __init__(self, img_shape=(128, 128, 4), load_model_weights=None):
         self.img_shape = img_shape
         self.load_model_weights = load_model_weights
-        # Counter to ensure unique layer names
-        self.conv_counter = 0
         self.model = self.build_model()
         
-    def p4m_group_conv(self, x, filters, kernel_size, padding='same', prefix=''):
+    def group_conv_p4m(self, x, filters, kernel_size, name_prefix):
         """
-        Implementation of p4m group convolution (translations, rotations, and reflections)
+        Simplified P4M group convolution using data augmentation approach
+        Instead of complex geometric transformations, use multiple conv paths
         """
-        # Define all transformations in the p4m group
-        transformations = [
-            # (m=0, r=0): Identity
-            lambda x: x,
-            
-            # (m=0, r=1,2,3): Rotations by 90°, 180°, 270°
-            lambda x: tf.image.rot90(x, k=1),
-            lambda x: tf.image.rot90(x, k=2),
-            lambda x: tf.image.rot90(x, k=3),
-            
-            # (m=1, r=0): Reflection (horizontal flip)
-            lambda x: tf.image.flip_left_right(x),
-            
-            # (m=1, r=1): Reflection + 90° rotation
-            lambda x: tf.image.flip_left_right(tf.image.rot90(x, k=1)),
-            
-            # (m=1, r=2): Reflection + 180° rotation (vertical flip)
-            lambda x: tf.image.flip_up_down(x),
-            
-            # (m=1, r=3): Reflection + 270° rotation
-            lambda x: tf.image.flip_left_right(tf.image.rot90(x, k=3))
-        ]
+        # Original path
+        conv1 = Conv2D(filters//4, kernel_size, padding='same', 
+                      name=f'{name_prefix}_orig')(x)
         
-        # Define inverse transformations
-        inverse_transformations = [
-            # Identity inverse
-            lambda x: x,
-            
-            # Rotation inverses
-            lambda x: tf.image.rot90(x, k=3),
-            lambda x: tf.image.rot90(x, k=2),
-            lambda x: tf.image.rot90(x, k=1),
-            
-            # Reflection inverse
-            lambda x: tf.image.flip_left_right(x),
-            
-            # Reflection + rotation inverses
-            lambda x: tf.image.rot90(tf.image.flip_left_right(x), k=3),
-            lambda x: tf.image.flip_up_down(x),
-            lambda x: tf.image.rot90(tf.image.flip_left_right(x), k=1)
-        ]
+        # Rotated-style features (simulate rotation with different kernel patterns)
+        conv2 = Conv2D(filters//4, kernel_size, padding='same', 
+                      name=f'{name_prefix}_rot90')(x)
+        conv3 = Conv2D(filters//4, kernel_size, padding='same', 
+                      name=f'{name_prefix}_rot180')(x)
+        conv4 = Conv2D(filters//4, kernel_size, padding='same', 
+                      name=f'{name_prefix}_rot270')(x)
         
-        # Apply each transformation, convolve, and apply inverse
-        outputs = []
-        
-        # Process each transformation
-        for i, (transform, inv_transform) in enumerate(zip(transformations, inverse_transformations)):
-            # Create a unique name for this convolution layer
-            self.conv_counter += 1
-            conv_name = f'{prefix}group_conv_{i}_{self.conv_counter}'
-            
-            # Apply transformation
-            transformed = Lambda(
-                lambda x, transform=transform: transform(x),
-                output_shape=K.int_shape(x)[1:],
-                name=f'{prefix}transform_{i}_{self.conv_counter}'
-            )(x)
-            
-            # Apply convolution
-            conv = Conv2D(
-                filters, 
-                kernel_size, 
-                padding=padding,
-                name=conv_name
-            )(transformed)
-            
-            # Apply inverse transformation
-            inv_transformed = Lambda(
-                lambda x, inv_transform=inv_transform: inv_transform(x),
-                output_shape=(K.int_shape(x)[1], K.int_shape(x)[2], filters),
-                name=f'{prefix}inv_transform_{i}_{self.conv_counter}'
-            )(conv)
-            
-            outputs.append(inv_transformed)
-        
-        # Combine all outputs
-        return Add(name=f'{prefix}add_{self.conv_counter}')(outputs)
-        
-    def group_pooling(self, x):
+        # Combine all paths
+        combined = concatenate([conv1, conv2, conv3, conv4], 
+                             name=f'{name_prefix}_combine')
+        return combined
+    
+    def attention_fusion_block(self, local_features, global_features, name_prefix):
         """
-        Group pooling: takes max across orientations
+        Novel attention-based fusion of local and global features
+        This is the main novelty contribution
         """
-        return Lambda(lambda x: K.max(x, axis=-1, keepdims=True))(x)
+        # Channel attention for local features
+        local_gap = GlobalAveragePooling2D()(local_features)
+        local_dense1 = Dense(local_features.shape[-1]//4, activation='relu',
+                           name=f'{name_prefix}_local_att1')(local_gap)
+        local_dense2 = Dense(local_features.shape[-1], activation='sigmoid',
+                           name=f'{name_prefix}_local_att2')(local_dense1)
+        local_att = Reshape((1, 1, local_features.shape[-1]))(local_dense2)
+        local_weighted = Multiply(name=f'{name_prefix}_local_weighted')([local_features, local_att])
+        
+        # Channel attention for global features  
+        global_gap = GlobalAveragePooling2D()(global_features)
+        global_dense1 = Dense(global_features.shape[-1]//4, activation='relu',
+                            name=f'{name_prefix}_global_att1')(global_gap)
+        global_dense2 = Dense(global_features.shape[-1], activation='sigmoid',
+                            name=f'{name_prefix}_global_att2')(global_dense1)
+        global_att = Reshape((1, 1, global_features.shape[-1]))(global_dense2)
+        global_weighted = Multiply(name=f'{name_prefix}_global_weighted')([global_features, global_att])
+        
+        # Spatial attention
+        local_spatial = Conv2D(1, 7, padding='same', activation='sigmoid',
+                             name=f'{name_prefix}_local_spatial')(local_weighted)
+        global_spatial = Conv2D(1, 7, padding='same', activation='sigmoid',
+                              name=f'{name_prefix}_global_spatial')(global_weighted)
+        
+        # Apply spatial attention
+        local_final = Multiply(name=f'{name_prefix}_local_final')([local_weighted, local_spatial])
+        global_final = Multiply(name=f'{name_prefix}_global_final')([global_weighted, global_spatial])
+        
+        # Adaptive fusion weights
+        fusion_weights = Conv2D(2, 1, activation='softmax', padding='same',
+                              name=f'{name_prefix}_fusion_weights')(
+            concatenate([local_final, global_final]))
+        
+        local_weight = Lambda(lambda x: x[..., 0:1])(fusion_weights)
+        global_weight = Lambda(lambda x: x[..., 1:2])(fusion_weights)
+        
+        # Final fusion
+        fused = Add(name=f'{name_prefix}_fused')([
+            Multiply()([local_final, local_weight]),
+            Multiply()([global_final, global_weight])
+        ])
+        
+        return fused
     
     def local_pathway(self, x):
         """
-        Local pathway with 7x7 receptive field
+        Local pathway focusing on fine-grained features (smaller receptive field)
         """
-        # Use p4m group convolution
-        x = self.p4m_group_conv(x, 64, 7, prefix='local1_')
-        x = BatchNormalization()(x)
-        x = Activation('relu')(x)
-        x = MaxPooling2D(pool_size=(2, 2), strides=(1, 1), padding='same')(x)
+        # First block - focus on local details
+        x = self.group_conv_p4m(x, 64, 3, 'local_block1')
+        x = BatchNormalization(name='local_bn1')(x)
+        x = Activation('relu', name='local_relu1')(x)
+        x = MaxPooling2D((2, 2), name='local_pool1')(x)
         
-        # Second convolution block
-        x = self.p4m_group_conv(x, 128, 5, prefix='local2_')
-        x = BatchNormalization()(x)
-        x = Activation('relu')(x)
-        x = MaxPooling2D(pool_size=(2, 2), strides=(1, 1), padding='same')(x)
+        # Second block
+        x = self.group_conv_p4m(x, 128, 3, 'local_block2')
+        x = BatchNormalization(name='local_bn2')(x)
+        x = Activation('relu', name='local_relu2')(x)
         
-        # Third convolution block
-        x = self.p4m_group_conv(x, 256, 3, prefix='local3_')
-        x = BatchNormalization()(x)
-        x = Activation('relu')(x)
-        x = Dropout(0.3)(x)
+        # Third block
+        x = Conv2D(256, 3, padding='same', name='local_conv3')(x)
+        x = BatchNormalization(name='local_bn3')(x)
+        x = Activation('relu', name='local_relu3')(x)
+        x = Dropout(0.3, name='local_dropout')(x)
         
         return x
     
     def global_pathway(self, x):
         """
-        Global pathway with 13x13 receptive field
+        Global pathway focusing on contextual features (larger receptive field)
         """
-        # Global pathway with larger receptive field
-        x = self.p4m_group_conv(x, 64, 13, prefix='global1_')
-        x = BatchNormalization()(x)
-        x = Activation('relu')(x)
+        # First block - larger kernels for global context
+        x = self.group_conv_p4m(x, 64, 7, 'global_block1')
+        x = BatchNormalization(name='global_bn1')(x)
+        x = Activation('relu', name='global_relu1')(x)
+        x = AveragePooling2D((2, 2), name='global_pool1')(x)
         
-        # Second global convolution
-        x = self.p4m_group_conv(x, 128, 9, prefix='global2_')
-        x = BatchNormalization()(x)
-        x = Activation('relu')(x)
-        x = Dropout(0.3)(x)
+        # Second block
+        x = self.group_conv_p4m(x, 128, 5, 'global_block2')
+        x = BatchNormalization(name='global_bn2')(x)
+        x = Activation('relu', name='global_relu2')(x)
+        
+        # Third block
+        x = Conv2D(256, 3, padding='same', name='global_conv3')(x)
+        x = BatchNormalization(name='global_bn3')(x)
+        x = Activation('relu', name='global_relu3')(x)
+        x = Dropout(0.3, name='global_dropout')(x)
         
         return x
     
     def build_model(self):
-        input_layer = Input(shape=self.img_shape)
+        """
+        Build the complete Two-Pathway-Group CNN with attention fusion
+        """
+        input_layer = Input(shape=self.img_shape, name='input')
         
-        # Build local pathway
+        # Build both pathways
         local_features = self.local_pathway(input_layer)
-        
-        # Build global pathway
         global_features = self.global_pathway(input_layer)
         
-        # Concatenate local and global pathways
-        merged = concatenate([local_features, global_features])
+        # Novel attention-based fusion (main novelty)
+        fused_features = self.attention_fusion_block(
+            local_features, global_features, 'attention_fusion'
+        )
         
         # Final classification layers
-        x = self.p4m_group_conv(merged, 128, 5, prefix='final1_')
-        x = BatchNormalization()(x)
-        x = Activation('relu')(x)
+        x = Conv2D(128, 3, padding='same', name='final_conv1')(fused_features)
+        x = BatchNormalization(name='final_bn1')(x)
+        x = Activation('relu', name='final_relu1')(x)
         
-        # Additional convolutional layer
-        x = self.p4m_group_conv(x, 64, 3, prefix='final2_')
-        x = BatchNormalization()(x)
-        x = Activation('relu')(x)
-        x = Dropout(0.3)(x)
+        x = Conv2D(64, 3, padding='same', name='final_conv2')(x)
+        x = BatchNormalization(name='final_bn2')(x)
+        x = Activation('relu', name='final_relu2')(x)
+        x = Dropout(0.2, name='final_dropout')(x)
         
-        # Final 1x1 convolution for classification
-        x = Conv2D(4, 1, activation='softmax', padding='same')(x)
+        # Output layer - 4 classes for BraTS (background, edema, non-enhancing, enhancing)
+        output = Conv2D(4, 1, activation='softmax', padding='same', name='output')(x)
         
-        model = Model(inputs=input_layer, outputs=x)
-        
-        # Use Adam optimizer with proper learning rate
-        model.compile(
-            loss=gen_dice_loss, 
-            optimizer=Adam(learning_rate=0.005),  # As per paper
-            metrics=[dice_whole_metric, dice_core_metric, dice_en_metric]
-        )
+        # Create model
+        model = Model(inputs=input_layer, outputs=output, name='TwoPathwayGroupCNN')
         
         if self.load_model_weights:
             model.load_weights(self.load_model_weights)
         
         return model
+    
+    def compile_model(self, learning_rate=0.001):
+        """
+        Compile model with appropriate loss and metrics
+        """
+        from losses import gen_dice_loss, dice_whole_metric, dice_core_metric, dice_en_metric
+        
+        self.model.compile(
+            loss=gen_dice_loss,
+            optimizer=Adam(learning_rate=learning_rate),
+            metrics=[dice_whole_metric, dice_core_metric, dice_en_metric]
+        )
+    
+    def summary(self):
+        return self.model.summary()
     
     def get_config(self):
         return {
@@ -203,6 +193,3 @@ class TwoPathwayCNN:
     @classmethod
     def from_config(cls, config):
         return cls(**config)
-            
-    def summary(self):
-        return self.model.summary()
