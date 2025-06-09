@@ -219,7 +219,7 @@ class TwoPathwayGroupCNN:
         
         # Output layer - 5 classes as per BraTS paper: background, necrosis, edema, non-enhancing, enhancing
         # Paper mentions: "five segmentation labels were provided: non-tumor, necrosis, edema, non-enhancing tumor and enhancing tumor"
-        output = Conv2D(5, (1, 1), activation='sigmoid', padding='same', name='output')(x)
+        output = Conv2D(4, (1, 1), activation='sigmoid', padding='same', name='output')(x)
         
         # Create model
         model = Model(inputs=input_layer, outputs=output, name='TwoPathwayGroupCNN_with_AttentionFusion')
