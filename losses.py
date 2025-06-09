@@ -1,6 +1,6 @@
 import tensorflow as tf
 import tensorflow.keras.backend as K
-import numpy as np 
+import numpy as np
 def dice_coefficient(y_true, y_pred, smooth=1e-6):
     """
     Compute Dice coefficient for binary masks
