@@ -1,9 +1,10 @@
 import tensorflow as tf
 import tensorflow.keras.backend as K
-
+import numpy as np 
 def dice_coefficient(y_true, y_pred, smooth=1e-6):
     """
     Compute Dice coefficient for binary masks
+    Formula from paper: Dice(P,G) = |P1 ∩ G1| / ((|P1| + |G1|)/2)
     """
     y_true_f = K.flatten(K.cast(y_true, 'float32'))
     y_pred_f = K.flatten(K.cast(y_pred, 'float32'))
@@ -12,7 +13,7 @@ def dice_coefficient(y_true, y_pred, smooth=1e-6):
 
 def multiclass_dice_loss(y_true, y_pred, smooth=1e-6):
     """
-    Multiclass Dice loss - more stable than the original implementation
+    Multiclass Dice loss - handles class imbalance better
     """
     y_true = K.cast(y_true, 'float32')
     y_pred = K.cast(y_pred, 'float32')
@@ -33,7 +34,7 @@ def multiclass_dice_loss(y_true, y_pred, smooth=1e-6):
 
 def focal_loss(y_true, y_pred, alpha=0.25, gamma=2.0):
     """
-    Focal loss to handle class imbalance
+    Focal loss to handle class imbalance as mentioned in the paper
     """
     y_pred = K.clip(y_pred, K.epsilon(), 1 - K.epsilon())
     
@@ -52,6 +53,7 @@ def focal_loss(y_true, y_pred, alpha=0.25, gamma=2.0):
 def tversky_loss(y_true, y_pred, alpha=0.3, beta=0.7, smooth=1e-6):
     """
     Tversky loss - generalizes Dice loss, good for imbalanced data
+    Particularly useful for brain tumor segmentation where classes are highly imbalanced
     """
     y_true = K.cast(y_true, 'float32')
     y_pred = K.cast(y_pred, 'float32')
@@ -77,6 +79,7 @@ def tversky_loss(y_true, y_pred, alpha=0.3, beta=0.7, smooth=1e-6):
 def combined_loss(y_true, y_pred, dice_weight=0.5, focal_weight=0.3, tversky_weight=0.2):
     """
     Combined loss function incorporating multiple loss types
+    This addresses the class imbalance issue mentioned in the paper
     """
     dice_loss = multiclass_dice_loss(y_true, y_pred)
     focal_loss_val = focal_loss(y_true, y_pred)
@@ -86,15 +89,17 @@ def combined_loss(y_true, y_pred, dice_weight=0.5, focal_weight=0.3, tversky_wei
             focal_weight * focal_loss_val + 
             tversky_weight * tversky_loss_val)
 
-# Evaluation Metrics
+# Evaluation Metrics as specified in the paper
+
 def dice_whole_metric(y_true, y_pred):
     """
-    Dice coefficient for whole tumor (classes 1, 2, 3)
+    Dice coefficient for whole tumor (all tumor classes combined)
+    Paper mentions evaluating "complete tumor" region
     """
     y_true = K.cast(y_true, 'float32')
     y_pred = K.cast(y_pred, 'float32')
     
-    # Convert to binary: tumor vs. non-tumor
+    # Convert to binary: tumor vs. non-tumor (exclude background class 0)
     y_true_whole = K.cast(K.sum(y_true[..., 1:], axis=-1) > 0, 'float32')
     y_pred_whole = K.cast(K.sum(y_pred[..., 1:], axis=-1) > 0, 'float32')
     
@@ -102,14 +107,16 @@ def dice_whole_metric(y_true, y_pred):
 
 def dice_core_metric(y_true, y_pred):
     """
-    Dice coefficient for tumor core (classes 1, 3) - excluding edema
+    Dice coefficient for tumor core region
+    Paper mentions evaluating "core tumor" region
+    Core = necrosis (class 1) + non-enhancing (class 3) + enhancing (class 4)
     """
     y_true = K.cast(y_true, 'float32')
     y_pred = K.cast(y_pred, 'float32')
     
-    # Core consists of classes 1 and 3 (non-enhancing and enhancing)
-    y_true_core = y_true[..., 1] + y_true[..., 3]
-    y_pred_core = y_pred[..., 1] + y_pred[..., 3]
+    # Core consists of classes 1, 3, 4 (excluding edema - class 2)
+    y_true_core = y_true[..., 1] + y_true[..., 3] + y_true[..., 4]
+    y_pred_core = y_pred[..., 1] + y_pred[..., 3] + y_pred[..., 4]
     
     y_true_core = K.cast(y_true_core > 0, 'float32')
     y_pred_core = K.cast(y_pred_core > 0, 'float32')
@@ -118,20 +125,23 @@ def dice_core_metric(y_true, y_pred):
 
 def dice_enhancing_metric(y_true, y_pred):
     """
-    Dice coefficient for enhancing tumor (class 3)
+    Dice coefficient for enhancing tumor (class 4)
+    Paper mentions evaluating "enhancing tumor" region
     """
     y_true = K.cast(y_true, 'float32')
     y_pred = K.cast(y_pred, 'float32')
     
-    return dice_coefficient(y_true[..., 3], y_pred[..., 3])
+    return dice_coefficient(y_true[..., 4], y_pred[..., 4])
 
 def sensitivity_metric(y_true, y_pred):
     """
-    Sensitivity (recall) for whole tumor
+    Sensitivity (Recall) for whole tumor as mentioned in paper
+    Formula: Sensitivity(P,G) = |P1 ∩ G1| / |G1|
     """
     y_true = K.cast(y_true, 'float32')
     y_pred = K.cast(y_pred, 'float32')
     
+    # Convert to binary: tumor vs. non-tumor
     y_true_whole = K.cast(K.sum(y_true[..., 1:], axis=-1) > 0, 'float32')
     y_pred_whole = K.cast(K.sum(y_pred[..., 1:], axis=-1) > 0, 'float32')
     
@@ -142,11 +152,13 @@ def sensitivity_metric(y_true, y_pred):
 
 def specificity_metric(y_true, y_pred):
     """
-    Specificity for whole tumor
+    Specificity for whole tumor as mentioned in paper
+    Formula: Specificity(P,G) = |P0 ∩ G0| / |G0|
     """
     y_true = K.cast(y_true, 'float32')
     y_pred = K.cast(y_pred, 'float32')
     
+    # Convert to binary: tumor vs. non-tumor
     y_true_whole = K.cast(K.sum(y_true[..., 1:], axis=-1) > 0, 'float32')
     y_pred_whole = K.cast(K.sum(y_pred[..., 1:], axis=-1) > 0, 'float32')
     
@@ -154,3 +166,71 @@ def specificity_metric(y_true, y_pred):
     possible_negatives = K.sum(1 - y_true_whole)
     
     return true_negatives / (possible_negatives + K.epsilon())
+
+# Additional metrics for comprehensive evaluation
+
+def precision_metric(y_true, y_pred):
+    """
+    Precision for whole tumor
+    """
+    y_true = K.cast(y_true, 'float32')
+    y_pred = K.cast(y_pred, 'float32')
+    
+    # Convert to binary: tumor vs. non-tumor
+    y_true_whole = K.cast(K.sum(y_true[..., 1:], axis=-1) > 0, 'float32')
+    y_pred_whole = K.cast(K.sum(y_pred[..., 1:], axis=-1) > 0, 'float32')
+    
+    true_positives = K.sum(y_true_whole * y_pred_whole)
+    predicted_positives = K.sum(y_pred_whole)
+    
+    return true_positives / (predicted_positives + K.epsilon())
+
+def hausdorff_distance_95(y_true, y_pred):
+    """
+    95th percentile Hausdorff Distance - commonly used in medical segmentation
+    Note: This is a simplified implementation; for actual use, consider using 
+    specialized libraries like SimpleITK
+    """
+    # This is a placeholder implementation
+    # In practice, you would use specialized libraries for accurate HD95 calculation
+    return 0.0
+
+# # Class weights for handling imbalanced dataset as mentioned in paper
+# def get_class_weights(y_train):
+#     """
+#     Calculate class weights to handle the imbalanced nature of brain tumor data
+#     Paper mentions: "healthy voxels comprise 98% of total voxels. 2% of them are pathological voxels 
+#     whereas only 0.18%, 1.1%, 0.12% and 0.38% belongs to necrosis, edema, non-enhanced and enhanced tumor respectively"
+#     """
+#     from sklearn.utils.class_weight import compute_class_weight
+#     import numpy as np
+    
+#     # Flatten the labels to get class distribution
+#     y_flat = y_train.reshape(-1, y_train.shape[-1])
+#     class_labels = np.argmax(y_flat, axis=1)
+    
+#     # Compute class weights
+#     classes = np.unique(class_labels)
+#     weights = compute_class_weight('balanced', classes=classes, y=class_labels)
+    
+#     return dict(zip(classes, weights))
+def get_class_weights(y):
+    """
+    Calculate class weights for your 4-class segmentation
+    """
+    class_weights = {}
+    total_pixels = y.shape[0] * y.shape[1] * y.shape[2]
+    
+    for class_idx in range(4):
+        class_pixels = np.sum(y[:,:,:,class_idx])
+        if class_pixels > 0:
+            weight = total_pixels / (4 * class_pixels)  # 4 is number of classes
+            class_weights[class_idx] = weight
+        else:
+            class_weights[class_idx] = 1.0
+    
+    print("Class weights calculated:")
+    for i, weight in class_weights.items():
+        print(f"  Class {i}: {weight:.4f}")
+    
+    return class_weights
