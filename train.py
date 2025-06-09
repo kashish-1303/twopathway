@@ -1,3 +1,5 @@
+
+
 import numpy as np
 import os
 import tensorflow as tf
@@ -11,19 +13,6 @@ import time
 from sklearn.model_selection import train_test_split
 import json
 
-# class MomentumScheduler(tf.keras.callbacks.Callback):
-#     """
-#     Custom callback to schedule momentum as mentioned in paper:
-#     "We gradually increase the momentum coefficient from 0.5 to 0.9 during training"
-#     """
-#     def __init__(self):
-#         super(MomentumScheduler, self).__init__()
-        
-#     def on_epoch_begin(self, epoch, logs=None):
-#         # Gradually increase momentum from 0.5 to 0.9
-#         momentum = min(0.5 + epoch * 0.01, 0.9)
-#         K.set_value(self.model.optimizer.momentum, momentum)
-#         print(f"Epoch {epoch + 1}: Momentum = {momentum:.3f}")
 class MomentumScheduler(tf.keras.callbacks.Callback):
     """
     Custom callback to schedule momentum as mentioned in paper:
