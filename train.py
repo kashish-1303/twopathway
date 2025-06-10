@@ -97,6 +97,8 @@ def train_phase1(model, X_train, y_train, X_val, y_val, epochs=50, batch_size=32
                 sensitivity_metric, specificity_metric]
     )
     
+    
+    
     # Callbacks
     callbacks = [
         ModelCheckpoint(
