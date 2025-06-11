@@ -374,7 +374,7 @@ def main_training_pipeline(X_train, y_train, X_val, y_val, X_test, y_test,
     save_training_results(history_phase1, history_phase2, results)
     
     # Save final model
-    model.model.model.save('models/2pg_cnn_final.keras')
+    model.model.save('models/2pg_cnn_final.keras')
     print("Final model saved to models/2pg_cnn_final.keras")
     
     print("\n" + "="*80)
@@ -421,9 +421,9 @@ if __name__ == "__main__":
     # Configuration
     DATA_DIR = "./"  # Current directory where your .npy files are
     IMG_SHAPE = (128, 128, 4)  # Matches your patch size
-    PHASE1_EPOCHS = 5
-    PHASE2_EPOCHS = 3
-    BATCH_SIZE = 16  # Reduce if you have memory issues
+    PHASE1_EPOCHS = 10
+    PHASE2_EPOCHS = 6
+    BATCH_SIZE = 16 # Reduce if you have memory issues
     
     # Load data (this will use your saved .npy files)
     X_train, X_val, X_test, y_train, y_val, y_test = load_brats_data(
