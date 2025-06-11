@@ -382,15 +382,36 @@ if __name__ == '__main__':
     path_LGG = glob(os.path.join(current_dir, 'BRATS2015', 'training', 'LGG', '*'))
     path_all = path_HGG + path_LGG
 
-    np.random.seed(2022)
-    np.random.shuffle(path_all)
+    # np.random.seed(2022)
+    # np.random.shuffle(path_all)
 
+    # np.random.seed(1555)
+    # start, end = 0, 10
+    # num_patches = 120 * (end - start) * 2
+    # h, w, d = 128, 128, 4 
+
+    # pipe = Pipeline(list_train=path_all[start:end], Normalize=True)
+    np.random.seed(2022)
+    np.random.shuffle(path_HGG)
+    np.random.shuffle(path_LGG)
+    
+    # Take 7 HGG and 3 LGG for balanced representation
+    num_hgg = 7
+    num_lgg = 3
+    
+    # Select files from both categories
+    selected_paths = path_HGG[:num_hgg] + path_LGG[:num_lgg]
+    
+    # Final shuffle of selected paths
     np.random.seed(1555)
-    start, end = 0, 10
-    num_patches = 120 * (end - start) * 2
+    np.random.shuffle(selected_paths)
+    
+    # Update variables
+    total_files = num_hgg + num_lgg  # This equals 10
+    num_patches = 120 * total_files * 2
     h, w, d = 128, 128, 4 
 
-    pipe = Pipeline(list_train=path_all[start:end], Normalize=True)
+    pipe = Pipeline(list_train=selected_paths, Normalize=True)
     
     try:
         # Use multi-scale patch extraction
@@ -470,11 +491,6 @@ if __name__ == '__main__':
         print(f"  Edema: {class_percentages[2]:.2f}%")
         print(f"  Enhancing tumor: {class_percentages[3]:.2f}%")
 
-        # # Save processed data
-        # print("Saving processed data...")
-        # np.save("x_training_test", Patches.astype(np.float32))
-        # np.save("y_training_test", Y_labels.astype(np.uint8))
-        # print("Data saved successfully")
         print("Splitting data into training and validation sets...")
         X_train, X_val, y_train, y_val = train_test_split(Patches, Y_labels, test_size=0.2, random_state=42)
 
@@ -483,21 +499,12 @@ if __name__ == '__main__':
 
         # Save processed data
         print("Saving processed data...")
-        # output_dir = '/content/patches'
-        # os.makedirs(output_dir, exist_ok=True)
-        # np.save(os.path.join(output_dir, "x_training"), X_train.astype(np.float32))
-        # np.save(os.path.join(output_dir, "y_training"), y_train.astype(np.float32))
-        # np.save(os.path.join(output_dir, "x_validation"), X_val.astype(np.float32))
-        # np.save(os.path.join(output_dir, "y_validation"), y_val.astype(np.float32))
-        
         np.save("x_training", X_train.astype(np.float32))
         np.save("y_training", y_train.astype(np.uint8))
         np.save("x_validation", X_val.astype(np.float32))
         np.save("y_validation", y_val.astype(np.uint8))
 
         # Also save the original combined data if needed for other purposes
-        # np.save(os.path.join(output_dir, "x_training_test"), Patches.astype(np.float32))
-        # np.save(os.path.join(output_dir, "y_training_test"), Y_labels.astype(np.unit8))
         np.save("x_training_test", Patches.astype(np.float32))
         np.save("y_training_test", Y_labels.astype(np.uint8))
         print("Data saved successfully")
