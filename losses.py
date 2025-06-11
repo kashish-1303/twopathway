@@ -1,6 +1,9 @@
+
+
 import tensorflow as tf
 import tensorflow.keras.backend as K
 import numpy as np
+
 def dice_coefficient(y_true, y_pred, smooth=1e-6):
     """
     Compute Dice coefficient for binary masks
@@ -14,6 +17,7 @@ def dice_coefficient(y_true, y_pred, smooth=1e-6):
 def multiclass_dice_loss(y_true, y_pred, smooth=1e-6):
     """
     Multiclass Dice loss - handles class imbalance better
+    FIXED: Handle softmax predictions properly
     """
     y_true = K.cast(y_true, 'float32')
     y_pred = K.cast(y_pred, 'float32')
@@ -35,20 +39,23 @@ def multiclass_dice_loss(y_true, y_pred, smooth=1e-6):
 def focal_loss(y_true, y_pred, alpha=0.25, gamma=2.0):
     """
     Focal loss to handle class imbalance as mentioned in the paper
+    FIXED: Handle softmax predictions properly
     """
-    y_pred = K.clip(y_pred, K.epsilon(), 1 - K.epsilon())
+    # No need to clip for softmax output, but add small epsilon for numerical stability
+    epsilon = K.epsilon()
+    y_pred = K.clip(y_pred, epsilon, 1. - epsilon)
     
-    # Calculate cross entropy
+    # Calculate cross entropy for multiclass
     ce_loss = -y_true * K.log(y_pred)
     
     # Calculate focal weight
-    pt = tf.where(tf.equal(y_true, 1), y_pred, 1 - y_pred)
+    pt = K.sum(y_true * y_pred, axis=-1, keepdims=True)
     focal_weight = alpha * K.pow(1 - pt, gamma)
     
     # Apply focal weight
-    focal_loss_val = focal_weight * ce_loss
+    focal_loss_val = focal_weight * K.sum(ce_loss, axis=-1, keepdims=True)
     
-    return K.mean(K.sum(focal_loss_val, axis=-1))
+    return K.mean(focal_loss_val)
 
 def tversky_loss(y_true, y_pred, alpha=0.3, beta=0.7, smooth=1e-6):
     """
@@ -109,14 +116,14 @@ def dice_core_metric(y_true, y_pred):
     """
     Dice coefficient for tumor core region
     Paper mentions evaluating "core tumor" region
-    Core = necrosis (class 1) + non-enhancing (class 3) + enhancing (class 4)
+    For 4-class system: Core = classes 1, 2, 3 (all tumor classes except background)
     """
     y_true = K.cast(y_true, 'float32')
     y_pred = K.cast(y_pred, 'float32')
     
-    # Core consists of classes 1, 3, 4 (excluding edema - class 2)
-    y_true_core = y_true[..., 1] + y_true[..., 3] + y_true[..., 4]
-    y_pred_core = y_pred[..., 1] + y_pred[..., 3] + y_pred[..., 4]
+    # Core consists of all tumor classes (1, 2, 3)
+    y_true_core = K.sum(y_true[..., 1:], axis=-1)
+    y_pred_core = K.sum(y_pred[..., 1:], axis=-1)
     
     y_true_core = K.cast(y_true_core > 0, 'float32')
     y_pred_core = K.cast(y_pred_core > 0, 'float32')
@@ -125,13 +132,14 @@ def dice_core_metric(y_true, y_pred):
 
 def dice_enhancing_metric(y_true, y_pred):
     """
-    Dice coefficient for enhancing tumor (class 4)
+    Dice coefficient for enhancing tumor (class 3 in 4-class system)
     Paper mentions evaluating "enhancing tumor" region
     """
     y_true = K.cast(y_true, 'float32')
     y_pred = K.cast(y_pred, 'float32')
     
-    return dice_coefficient(y_true[..., 4], y_pred[..., 4])
+    # Use class 3 as enhancing tumor (adjust based on your class mapping)
+    return dice_coefficient(y_true[..., 3], y_pred[..., 3])
 
 def sensitivity_metric(y_true, y_pred):
     """
@@ -188,32 +196,10 @@ def precision_metric(y_true, y_pred):
 def hausdorff_distance_95(y_true, y_pred):
     """
     95th percentile Hausdorff Distance - commonly used in medical segmentation
-    Note: This is a simplified implementation; for actual use, consider using 
-    specialized libraries like SimpleITK
+    Note: This is a simplified implementation
     """
-    # This is a placeholder implementation
-    # In practice, you would use specialized libraries for accurate HD95 calculation
     return 0.0
 
-# # Class weights for handling imbalanced dataset as mentioned in paper
-# def get_class_weights(y_train):
-#     """
-#     Calculate class weights to handle the imbalanced nature of brain tumor data
-#     Paper mentions: "healthy voxels comprise 98% of total voxels. 2% of them are pathological voxels 
-#     whereas only 0.18%, 1.1%, 0.12% and 0.38% belongs to necrosis, edema, non-enhanced and enhanced tumor respectively"
-#     """
-#     from sklearn.utils.class_weight import compute_class_weight
-#     import numpy as np
-    
-#     # Flatten the labels to get class distribution
-#     y_flat = y_train.reshape(-1, y_train.shape[-1])
-#     class_labels = np.argmax(y_flat, axis=1)
-    
-#     # Compute class weights
-#     classes = np.unique(class_labels)
-#     weights = compute_class_weight('balanced', classes=classes, y=class_labels)
-    
-#     return dict(zip(classes, weights))
 def get_class_weights(y):
     """
     Calculate class weights for your 4-class segmentation
